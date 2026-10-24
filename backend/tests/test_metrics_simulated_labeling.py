@@ -46,7 +46,8 @@ def test_provenance_and_recovery_summary_are_kept_separate(client):
     metrics = client.get("/api/batch/metrics").json()
 
     provenance = metrics["razorpay_data_provenance"]
-    assert set(provenance.keys()) == {"note", "live_test_mode_orders", "real_order_tagged_failure_orders"}
+    assert set(provenance.keys()) == {"note", "razorpay_test_orders", "local_orders"}
+    assert "synthetic" in provenance["note"].lower()
     assert "do not describe recovery outcomes" in provenance["note"].lower()
 
 
@@ -67,6 +68,20 @@ def test_metrics_recovery_numbers_match_underlying_results(client):
     # Every single result must itself be flagged as simulated — the
     # per-record source of truth metrics are aggregated from.
     assert all(r["outcome_is_simulated"] is True for r in results)
+
+
+def test_batch_saved_by_an_older_version_is_ignored_not_a_crash(client, isolated_state_db):
+    """state.db files from before the provenance rename hold
+    'real_order_tagged_failure'. They must not 500 every batch endpoint."""
+    client.post("/api/batch/run", params={"n": 3, "try_live_orders": False})
+    stored = isolated_state_db.storage.get_value("batch:last_results")
+    for item in stored["items"]:
+        item["razorpay_source"] = "real_order_tagged_failure"
+    isolated_state_db.storage.set_value("batch:last_results", stored)
+
+    assert client.get("/api/batch/results").json() == {"count": 0, "results": []}
+    assert client.get("/api/batch/metrics").status_code == 404
+    assert client.get("/api/showcase/case").json() == {"kind": "none"}
 
 
 def test_metrics_endpoint_404s_before_any_batch_has_run(client):

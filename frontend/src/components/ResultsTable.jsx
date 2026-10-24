@@ -47,12 +47,12 @@ export default function ResultsTable({ results }) {
                 <td>
                   <span
                     className={
-                      r.razorpay_source === 'live_test_mode'
+                      r.razorpay_source === 'razorpay_test_order'
                         ? 'badge badge-source-live'
                         : 'badge badge-source-tagged'
                     }
                   >
-                    {r.razorpay_source === 'live_test_mode' ? 'REAL TEST ORDER' : 'TAGGED'}
+                    {r.razorpay_source === 'razorpay_test_order' ? 'RAZORPAY TEST ORDER' : 'LOCAL ORDER'}
                   </span>
                 </td>
                 <td>{r.action_taken.replace(/_/g, ' ')}</td>

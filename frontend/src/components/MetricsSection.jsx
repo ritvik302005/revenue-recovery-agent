@@ -17,34 +17,33 @@ function AnimatedNumber({ value, decimals = 0, prefix = '', suffix = '' }) {
 export default function MetricsSection({ metrics }) {
   const { razorpay_data_provenance: prov, simulated_recovery_summary: sim, breakdown_by_failure_reason: byReason } = metrics
 
-  const liveCount = prov.live_test_mode_orders
-  const taggedCount = prov.real_order_tagged_failure_orders
+  const razorpayOrders = prov.razorpay_test_orders
+  const localOrders = prov.local_orders
 
   return (
     <>
       {/* PROVENANCE BANNER — always visible, never mixed with outcome numbers */}
       <div className="provenance-banner">
         <div className="provenance-chip chip-real">
-          ● {liveCount} order{liveCount !== 1 ? 's' : ''} from Razorpay TEST MODE • Connected Orders API
+          ● {razorpayOrders} real Razorpay test-mode order{razorpayOrders !== 1 ? 's' : ''}
         </div>
         <div className="provenance-chip chip-simulated">
-          ● {taggedCount} order{taggedCount !== 1 ? 's' : ''} using Razorpay's documented error
-          taxonomy (offline fallback — no live API call)
+          ● {localOrders} local order id{localOrders !== 1 ? 's' : ''} (no Razorpay call)
         </div>
       </div>
 
-      {/* REAL DATA PROVENANCE */}
+      {/* ORDER PROVENANCE */}
       <div className="section">
-        <div className="section-label label-real">Razorpay Data Provenance (Real)</div>
+        <div className="section-label label-real">Order Provenance</div>
         <p className="section-note">{prov.note}</p>
         <div className="metrics-grid">
           <div className="metric-card">
-            <div className="metric-value"><AnimatedNumber value={liveCount} /></div>
-            <div className="metric-label">Razorpay Test Mode orders</div>
+            <div className="metric-value"><AnimatedNumber value={razorpayOrders} /></div>
+            <div className="metric-label">Real Razorpay test orders</div>
           </div>
           <div className="metric-card">
-            <div className="metric-value"><AnimatedNumber value={taggedCount} /></div>
-            <div className="metric-label">Real-error-taxonomy (offline) orders</div>
+            <div className="metric-value"><AnimatedNumber value={localOrders} /></div>
+            <div className="metric-label">Local order ids (no API call)</div>
           </div>
         </div>
       </div>

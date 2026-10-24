@@ -22,9 +22,12 @@ from razorpay_client import (
     create_real_order, fetch_real_payment, classify_real_payment_error,
     verify_checkout_signature,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+import logging
 import uuid
 import storage
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Revenue Recovery Agent")
 
@@ -90,7 +93,13 @@ def _load_last_results() -> list:
     raw = storage.get_value(BATCH_RESULTS_KEY)
     if not raw:
         return []
-    return [RecoveryResult(**item) for item in raw["items"]]
+    try:
+        return [RecoveryResult(**item) for item in raw["items"]]
+    except ValidationError:
+        # Saved by an older version (e.g. before the provenance values were
+        # renamed). Treat it as no batch rather than failing every request.
+        logger.warning("Stored batch results don't match the current schema; ignoring them. Run a new batch.")
+        return []
 
 
 @app.get("/api/health")
@@ -125,8 +134,8 @@ def get_metrics():
 
     total = len(results)
 
-    live_count = sum(1 for r in results if r.razorpay_source == RazorpaySource.LIVE_TEST_MODE)
-    tagged_count = total - live_count
+    razorpay_order_count = sum(1 for r in results if r.razorpay_source == RazorpaySource.RAZORPAY_TEST_ORDER)
+    local_order_count = total - razorpay_order_count
 
     recovered = [r for r in results if r.outcome == Outcome.RECOVERED]
     still_failed = [r for r in results if r.outcome == Outcome.STILL_FAILED]
@@ -146,10 +155,12 @@ def get_metrics():
 
     return {
         "razorpay_data_provenance": {
-            "note": "These counts describe where each record's order/error data came "
-                     "from. They do NOT describe recovery outcomes, which are always simulated.",
-            "live_test_mode_orders": live_count,
-            "real_order_tagged_failure_orders": tagged_count,
+            "note": "These counts describe where each record's order came from: a real "
+                     "Razorpay test-mode order, or a locally generated order id. Failure reasons "
+                     "are synthetic in both cases. They do NOT describe recovery outcomes, which "
+                     "are always simulated.",
+            "razorpay_test_orders": razorpay_order_count,
+            "local_orders": local_order_count,
         },
         "simulated_recovery_summary": {
             "note": "Recovery outcomes below are simulated — Razorpay test mode cannot "

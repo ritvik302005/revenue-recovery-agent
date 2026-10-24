@@ -44,11 +44,11 @@ class Outcome(str, Enum):
 
 
 class RazorpaySource(str, Enum):
-    """How this record's order/failure data was obtained."""
-    LIVE_TEST_MODE = "live_test_mode"        # real Orders API call + real Checkout failure
-    REAL_ORDER_TAGGED_FAILURE = "real_order_tagged_failure"  # real Orders API, failure reason
-                                                                # assigned from Razorpay's documented
-                                                                # error taxonomy (batch mode, no browser)
+    """Where a batch record's ORDER came from. In both cases the failure
+    reason is synthetic (a documented Razorpay code assigned by the
+    generator) and the recovery outcome is simulated."""
+    RAZORPAY_TEST_ORDER = "razorpay_test_order"   # a real order created via Razorpay's test-mode Orders API
+    LOCAL_ORDER = "local_order"                   # no Razorpay call; locally generated order id
 
 
 class PaymentRecord(BaseModel):
@@ -63,7 +63,7 @@ class PaymentRecord(BaseModel):
     payment_id: str = Field(default_factory=lambda: f"pay_{uuid.uuid4().hex[:14]}")
     order_id: str = Field(default_factory=lambda: f"order_{uuid.uuid4().hex[:14]}")
     razorpay_order_id: Optional[str] = None      # populated only by a real Orders API call
-    razorpay_source: RazorpaySource = RazorpaySource.REAL_ORDER_TAGGED_FAILURE
+    razorpay_source: RazorpaySource = RazorpaySource.LOCAL_ORDER
     amount: int  # in paise, like Razorpay
     currency: str = "INR"
     customer_email: str

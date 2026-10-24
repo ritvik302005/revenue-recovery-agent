@@ -99,7 +99,7 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 ## 6. Data and provenance
 
-- `RazorpaySource` today: `live_test_mode` (real order created, failure synthetic) and `real_order_tagged_failure` (**no** real order; local ID; failure synthetic). Both names are misleading; P3-4 renames them.
+- `RazorpaySource` (P3-4): `razorpay_test_order` (a real order created via Razorpay's test-mode Orders API) or `local_order` (no Razorpay call; local id). The failure reason is synthetic in both. Metrics: `razorpay_data_provenance.razorpay_test_orders` / `.local_orders`.
 - `outcome_is_simulated`: always `true` for batch results, `false` for live-demo results.
 - Amounts are integers in paise; currency INR only.
 

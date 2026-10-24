@@ -53,13 +53,13 @@ def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) ->
         amount = rng.choice([49900, 99900, 149900, 249900, 499900, 999900])  # paise
 
         razorpay_order_id = None
-        source = RazorpaySource.REAL_ORDER_TAGGED_FAILURE
+        source = RazorpaySource.LOCAL_ORDER
 
         if try_live_orders:
             try:
                 order = create_real_order(amount=amount, receipt=f"batch_{i}")
                 razorpay_order_id = order["id"]
-                source = RazorpaySource.LIVE_TEST_MODE
+                source = RazorpaySource.RAZORPAY_TEST_ORDER
             except Exception as e:
                 live_order_failures += 1
                 logger.debug(f"Live order creation unavailable ({e}); using local order id.")
@@ -81,9 +81,9 @@ def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) ->
     if try_live_orders and live_order_failures == n:
         logger.warning(
             f"All {n} live Orders API calls failed (likely no network access to "
-            f"api.razorpay.com from this environment, or missing keys). Batch is "
-            f"using REAL_ORDER_TAGGED_FAILURE mode — real error taxonomy, "
-            f"locally-generated order ids. Run with network + keys for LIVE_TEST_MODE."
+            f"api.razorpay.com from this environment, or missing keys). Every record "
+            f"uses a locally generated order id (LOCAL_ORDER). Run with network + keys "
+            f"for real Razorpay test orders (RAZORPAY_TEST_ORDER)."
         )
 
     return batch
@@ -92,6 +92,6 @@ def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) ->
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     batch = generate_batch(60)
-    live_count = sum(1 for p in batch if p.razorpay_source == RazorpaySource.LIVE_TEST_MODE)
+    live_count = sum(1 for p in batch if p.razorpay_source == RazorpaySource.RAZORPAY_TEST_ORDER)
     print(f"Generated {len(batch)} records, {live_count} via live Razorpay Orders API.")
     print(batch[0].model_dump_json(indent=2))
