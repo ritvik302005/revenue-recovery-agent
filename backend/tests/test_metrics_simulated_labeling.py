@@ -83,7 +83,8 @@ def test_live_demo_result_is_never_labeled_simulated(client, isolated_state_db):
 
     main._set_demo_record("order_live", {
         "amount": 1000,
-        "stage": "failure_recorded",
+        "stage": "recovery_order_created",
+        "current_recovery_order_id": "order_R",
         "original_payment_id": "pay_original",
         "failure_reason": "card_declined",
         "raw_error_code": "x",

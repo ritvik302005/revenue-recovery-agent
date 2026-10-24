@@ -45,8 +45,11 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
 | GET | `/api/live-demo/config` | – | – | no | Returns public `key_id` |
 | POST | `/api/live-demo/create-order` | API key if set | 10/min/IP | yes | ₹1–₹1,000, receipt generated server-side |
-| POST | `/api/live-demo/report-failure?order_id&payment_id` | API key if set | **none** | yes | Checks order/amount/INR; **no status check** |
-| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id` | API key if set | **none** | yes | Checks payment ↔ `recovery_order_id` (client-supplied, unbound) |
+| POST | `/api/live-demo/report-failure?order_id&payment_id` | API key if set | **none** | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; **no status check yet (P2-1)** |
+| POST | `/api/live-demo/create-recovery-order?order_id` | API key if set | 10/min/IP | yes | Stage `failure_recorded` → `recovery_order_created`; server creates the order for the original amount and stores `current_recovery_order_id` |
+| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id` | API key if set | **none** | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording |
+
+Out-of-order or repeated calls return **409**; unknown sessions **404**. Every stage change is an atomic read-check-write (`storage.update_atomic`).
 
 ## 4. Agent (current)
 
@@ -63,14 +66,16 @@ Measured behaviour (200 runs × 60): recovery rate 50–88% (mean 66%); outcomes
 
 ## 5. Live demo flow
 
-### Current
+### Current (after P1-1, P1-2)
 ```
-create-order (amount) ──► Checkout (failing test card) ──► payment.failed
-   ──► report-failure(order_id, payment_id) ──► stage=failure_recorded
-create-order again (recovery) ──► Checkout (success test card) ──► handler
-   ──► report-recovery(order_id, recovery_order_id, recovery_payment_id) ──► stage=recovery_attempted
+create-order (amount) ──► stage=order_created ──► Checkout (failing test card) ──► payment.failed
+   ──► report-failure(order_id, payment_id) ──► stage=failure_recorded   (or held if the safety gate blocks)
+create-recovery-order(order_id) ──► server creates order, stores current_recovery_order_id
+   ──► stage=recovery_order_created ──► Checkout (success test card) ──► handler / payment.failed
+   ──► report-recovery(order_id, recovery_order_id, recovery_payment_id) ──► stage=recovered | recovery_failed
 ```
-Known holes: recovery order not bound; no status check on the failure; failure can be re-reported to reset the stage; a payment can be reused; failed recovery can't be retried; no signature check.
+Fixed: recovery order bound to the session (B2); stages only move forward, replays get 409 (B3); concurrent reports record once.
+Still open: no status check on the failure (P2-1); a payment ID can be reused across sessions (P1-3); `recovery_failed` can't start a new attempt yet (P1-4); no signature check (P1-5).
 
 ### Target (Phases 1–2)
 ```
@@ -98,7 +103,8 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 - Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600).
 - SQLite file `backend/state.db` by default; Redis when `REDIS_URL` is set (untested).
-- Target: atomic compare-and-set for session stages; a used-payment registry; Redis/Upstash in deployment (Render's disk is not persistent).
+- Atomic operations (P1-2): `set_if_absent(key, value, ttl)` and `update_atomic(key, fn, ttl)`. SQLite uses `BEGIN IMMEDIATE`; Redis uses `WATCH`/`MULTI` with retry. `fn` may raise to abort without writing.
+- Target: a used-payment registry (P1-3); Redis/Upstash in deployment (Render's disk is not persistent).
 
 ## 8. Configuration
 

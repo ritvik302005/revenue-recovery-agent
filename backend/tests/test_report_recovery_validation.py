@@ -6,13 +6,15 @@ original amount, in the expected currency.
 from unittest.mock import patch
 
 
-def _seed_failure_recorded(main, order_id="order_A", amount=1000):
-    """Directly seed a live-demo record in the 'failure_recorded'
-    stage, as /report-failure would have left it, so tests can call
-    /report-recovery without going through the full Checkout flow."""
+def _seed_failure_recorded(main, order_id="order_A", amount=1000, recovery_order_id="order_R"):
+    """Directly seed a live-demo record in the 'recovery_order_created'
+    stage, as /report-failure followed by /create-recovery-order would
+    have left it (recovery order bound to the session), so tests can
+    call /report-recovery without going through the full Checkout flow."""
     main._set_demo_record(order_id, {
         "amount": amount,
-        "stage": "failure_recorded",
+        "stage": "recovery_order_created",
+        "current_recovery_order_id": recovery_order_id,
         "original_payment_id": "pay_original",
         "failure_reason": "card_declined",
         "raw_error_code": "BAD_REQUEST_ERROR / payment_declined",

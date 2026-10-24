@@ -100,7 +100,12 @@ export default function LiveDemo({ onBack }) {
     const rzp = new window.Razorpay(options)
     rzp.on('payment.failed', async function (response) {
       const paymentId = response.error.metadata.payment_id
-      await handleFailure(orderData.id, paymentId)
+      if (mode === 'fail') {
+        await handleFailure(orderData.id, paymentId)
+      } else {
+        // A failed recovery attempt is a real outcome too: record it.
+        await handleRecoverySuccess(order.id, orderData.id, paymentId)
+      }
     })
     rzp.open()
   }
@@ -113,7 +118,7 @@ export default function LiveDemo({ onBack }) {
         { method: 'POST' }
       )
       const data = await res.json()
-      if (!res.ok || data.error) throw new Error(data.error || 'Failed to report failure')
+      if (!res.ok) throw new Error(data.detail || 'Failed to report failure')
       setFailureInfo(data)
       setStage(STAGES.FAILURE_RECORDED)
     } catch (e) {
@@ -127,12 +132,14 @@ export default function LiveDemo({ onBack }) {
     setError(null)
     setBusy(true)
     try {
-      const res = await fetch(`${API_BASE}/api/live-demo/create-order`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: 1000, label: 'live_demo_recovery' }),
-      })
+      // The server creates the recovery order and binds it to this
+      // session; report-recovery only accepts a payment on this order.
+      const res = await fetch(
+        `${API_BASE}/api/live-demo/create-recovery-order?order_id=${order.id}`,
+        { method: 'POST' }
+      )
       const orderData = await res.json()
+      if (!res.ok) throw new Error(orderData.detail || 'Could not create the recovery order')
       setRecoveryOrder(orderData)
       setStage(STAGES.RECOVERY_ORDER_CREATED)
       openCheckout(orderData, 'success')
@@ -150,7 +157,7 @@ export default function LiveDemo({ onBack }) {
         { method: 'POST' }
       )
       const data = await res.json()
-      if (!res.ok || data.error) throw new Error(data.error || 'Failed to report recovery')
+      if (!res.ok) throw new Error(data.detail || 'Failed to report recovery')
       setResult(data)
       setStage(STAGES.DONE)
     } catch (e) {

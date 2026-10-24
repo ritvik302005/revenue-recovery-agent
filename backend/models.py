@@ -78,9 +78,18 @@ class AuditLogEntry(BaseModel):
 
 
 class LiveDemoStage(str, Enum):
+    """Live-demo session stages. They only move forward:
+
+    order_created -> failure_recorded -> recovery_order_created -> recovered
+                  -> held (safety gate)                         -> recovery_failed
+                                                                     -> recovery_order_created (retry)
+    """
     ORDER_CREATED = "order_created"
     FAILURE_RECORDED = "failure_recorded"
-    RECOVERY_ATTEMPTED = "recovery_attempted"
+    HELD = "held"                                  # safety gate blocked recovery; final
+    RECOVERY_ORDER_CREATED = "recovery_order_created"
+    RECOVERED = "recovered"                        # final
+    RECOVERY_FAILED = "recovery_failed"            # a new recovery order may follow
 
 
 class LiveDemoResult(BaseModel):

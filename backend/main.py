@@ -14,7 +14,7 @@ import os
 import time
 from collections import defaultdict
 
-from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult
+from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult, LiveDemoStage
 from simulate_batch import generate_batch
 from recovery_agent import run_recovery, select_recovery_action, safety_check, AgentState
 from razorpay_client import (
@@ -177,6 +177,31 @@ def _set_demo_record(order_id: str, data: dict) -> None:
     storage.set_value(LIVE_DEMO_KEY_PREFIX + order_id, data, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
 
 
+def _require_stage(record: Optional[dict], order_id: str, allowed: set) -> dict:
+    """404 for an unknown session, 409 if it isn't at one of the allowed stages."""
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Unknown order_id '{order_id}'. Call /create-order first.")
+    if record.get("stage") not in {s.value for s in allowed}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Order '{order_id}' is at stage '{record.get('stage')}'; this step needs "
+                   f"{' or '.join(sorted(s.value for s in allowed))}.",
+        )
+    return record
+
+
+def _transition(order_id: str, allowed: set, update) -> dict:
+    """Move a live-demo session forward atomically.
+
+    Re-checks the stage inside the storage lock, so two requests can't
+    both pass the same check (replays, double submits). `update(record)`
+    returns the fields to change; the merged record is stored and returned."""
+    def apply(current):
+        record = _require_stage(current, order_id, allowed)
+        return {**record, **update(record)}
+    return storage.update_atomic(LIVE_DEMO_KEY_PREFIX + order_id, apply, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+
+
 class CreateDemoOrderRequest(BaseModel):
     # Paise. Bounded to a sane range for a demo order — ₹1 to ₹1,000 —
     # so the browser can't request an arbitrarily large or zero/negative
@@ -213,7 +238,7 @@ def create_demo_order(req: CreateDemoOrderRequest):
         order = create_real_order(amount=req.amount, receipt=receipt)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not create a real Razorpay order: {e}")
-    _set_demo_record(order["id"], {"amount": req.amount, "stage": "order_created"})
+    _set_demo_record(order["id"], {"amount": req.amount, "stage": LiveDemoStage.ORDER_CREATED.value})
     return order
 
 
@@ -227,9 +252,9 @@ def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
     the actual recovery attempt happens via a second real Checkout,
     see /report-recovery).
     """
-    order_record = _get_demo_record(order_id)
-    if not order_record:
-        raise HTTPException(status_code=404, detail=f"Unknown order_id '{order_id}'. Call /create-order first.")
+    # Fast check before calling Razorpay; re-checked atomically when the
+    # stage is written below, so a replay can't slip in between.
+    order_record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.ORDER_CREATED})
 
     try:
         payment = fetch_real_payment(payment_id)
@@ -280,14 +305,14 @@ def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
     state = select_recovery_action(state)
     state = safety_check(state)
 
-    _set_demo_record(order_id, {
-        **(_get_demo_record(order_id) or {}),
+    safety_passed = not state["done"]
+    _transition(order_id, {LiveDemoStage.ORDER_CREATED}, lambda record: {
         "original_payment_id": payment_id,
         "failure_reason": failure_reason,
         "raw_error_code": raw_error_code,
         "recommended_action": state["action"],
-        "safety_check_passed": not state["done"],
-        "stage": "failure_recorded",
+        "safety_check_passed": safety_passed,
+        "stage": (LiveDemoStage.FAILURE_RECORDED if safety_passed else LiveDemoStage.HELD).value,
         "audit_trail": [e.model_dump(mode="json") for e in state["audit_trail"]],
     })
 
@@ -295,22 +320,54 @@ def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
         "failure_reason": failure_reason.value,
         "raw_error_code": raw_error_code,
         "recommended_action": state["action"].value,
-        "safety_check_passed": not state["done"],
+        "safety_check_passed": safety_passed,
+        "stage": (LiveDemoStage.FAILURE_RECORDED if safety_passed else LiveDemoStage.HELD).value,
         "audit_trail": [a.model_dump() for a in state["audit_trail"]],
     }
+
+
+@app.post("/api/live-demo/create-recovery-order", dependencies=[Depends(require_api_key), Depends(rate_limit)])
+def create_recovery_order(order_id: str = Query(...)):
+    """
+    Creates the recovery order for a recorded failure — server-side, for
+    the original amount — and binds it to the session. report-recovery
+    only accepts a payment on exactly this order, so the browser can't
+    pick an unrelated (or the original) order as the "recovery".
+    """
+    record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.FAILURE_RECORDED})
+
+    receipt = f"live_recovery_{uuid.uuid4().hex[:16]}"
+    try:
+        order = create_real_order(amount=record["amount"], receipt=receipt)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not create a real Razorpay recovery order: {e}")
+
+    _transition(order_id, {LiveDemoStage.FAILURE_RECORDED}, lambda record: {
+        "stage": LiveDemoStage.RECOVERY_ORDER_CREATED.value,
+        "current_recovery_order_id": order["id"],
+        "audit_trail": record.get("audit_trail", []) + [
+            AuditLogEntry(payment_id=record["original_payment_id"], step="execute",
+                          detail=f"Created recovery order {order['id']} for the original amount "
+                                 f"({record['amount']} paise).").model_dump(mode="json")
+        ],
+    })
+    return order
 
 
 @app.post("/api/live-demo/report-recovery", dependencies=[Depends(require_api_key)])
 def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query(...), recovery_order_id: str = Query(...)):
     """
-    Called after the user completes a SECOND real Checkout attempt
-    (with a success test instrument) representing the agent's chosen
-    recovery action. Fetches the real payment status — this is a
-    genuinely real outcome, not simulated.
+    Called after the user completes the recovery Checkout on the order
+    from /create-recovery-order. Fetches the real payment status — this
+    is a genuinely real outcome, not simulated.
     """
-    record = _get_demo_record(order_id)
-    if not record or record.get("stage") != "failure_recorded":
-        raise HTTPException(status_code=404, detail="No recorded failure for this order_id. Call /report-failure first.")
+    record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED})
+    if recovery_order_id != record.get("current_recovery_order_id") or recovery_order_id == order_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{recovery_order_id}' is not the recovery order created for order '{order_id}'. "
+                   f"Use the order returned by /create-recovery-order.",
+        )
 
     try:
         payment = fetch_real_payment(recovery_payment_id)
@@ -337,41 +394,52 @@ def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query
         raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
 
     real_status = payment.get("status")  # "captured" = success in Razorpay test mode
+    if real_status not in ("captured", "failed"):
+        # e.g. "created"/"authorized": not final yet. Don't record an
+        # outcome (or use up the attempt) on a payment still in flight.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Recovery payment {recovery_payment_id} is '{real_status}', not final yet. Try again shortly.",
+        )
     recovered = real_status == "captured"
 
     outcome = Outcome.RECOVERED if recovered else Outcome.STILL_FAILED
     amount_recovered = payment.get("amount", 0) if recovered else 0
 
-    audit_trail = list(record["audit_trail"]) + [
-        AuditLogEntry(
-            payment_id=recovery_payment_id, step="execute",
-            detail=f"Real recovery Checkout attempt completed. Razorpay payment "
-                   f"status='{real_status}'. Outcome: {outcome.value}.",
+    def record_outcome(record: dict) -> dict:
+        # Re-checked under the storage lock: still the same recovery order.
+        if record.get("current_recovery_order_id") != recovery_order_id:
+            raise HTTPException(status_code=409, detail="The recovery order for this session changed; reload and retry.")
+        audit_trail = list(record.get("audit_trail", [])) + [
+            AuditLogEntry(
+                payment_id=recovery_payment_id, step="execute",
+                detail=f"Real recovery Checkout attempt completed on order {recovery_order_id}. "
+                       f"Razorpay payment status='{real_status}'. Outcome: {outcome.value}.",
+            ).model_dump(mode="json")
+        ]
+        result = LiveDemoResult(
+            original_order_id=order_id,
+            original_payment_id=record["original_payment_id"],
+            recovery_order_id=recovery_order_id,
+            recovery_payment_id=recovery_payment_id,
+            amount=record["amount"],
+            failure_reason=record["failure_reason"],
+            raw_error_code=record["raw_error_code"],
+            recommended_action=record["recommended_action"],
+            safety_check_passed=record["safety_check_passed"],
+            recovery_outcome=outcome,
+            outcome_is_simulated=False,
+            amount_recovered=amount_recovered,
+            audit_trail=audit_trail,
         )
-    ]
+        return {
+            "stage": (LiveDemoStage.RECOVERED if recovered else LiveDemoStage.RECOVERY_FAILED).value,
+            "audit_trail": audit_trail,
+            "result": result.model_dump(mode="json"),
+        }
 
-    result = LiveDemoResult(
-        original_order_id=order_id,
-        original_payment_id=record["original_payment_id"],
-        recovery_order_id=recovery_order_id,
-        recovery_payment_id=recovery_payment_id,
-        amount=record["amount"],
-        failure_reason=record["failure_reason"],
-        raw_error_code=record["raw_error_code"],
-        recommended_action=record["recommended_action"],
-        safety_check_passed=record["safety_check_passed"],
-        recovery_outcome=outcome,
-        outcome_is_simulated=False,
-        amount_recovered=amount_recovered,
-        audit_trail=audit_trail,
-    )
-    _set_demo_record(order_id, {
-        **record,
-        "stage": "recovery_attempted",
-        "result": result.model_dump(mode="json"),
-    })
-
-    return result.model_dump()
+    stored = _transition(order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED}, record_outcome)
+    return {**stored["result"], "stage": stored["stage"]}
 
 
 if __name__ == "__main__":
