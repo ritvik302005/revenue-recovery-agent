@@ -3,10 +3,14 @@ import { useState, useEffect } from 'react'
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const CHECKOUT_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js'
 
-// Razorpay's own documented test instruments (from their public
-// test-integration docs) — not invented.
-const TEST_CARD_FAIL = { number: '4100280000090000', expiry: '12/30', cvv: '123' }
-const TEST_CARD_SUCCESS = { number: '4111111111111111', expiry: '12/30', cvv: '123' }
+// Razorpay's documented test cards (checked 2026-10-25):
+// https://razorpay.com/docs/payments/payments/test-card-details/
+// Any future expiry and any CVV work. The error card only fails if
+// "Failure" is chosen on the mock bank page (it then returns
+// error_reason payment_timed_out); the domestic card succeeds with
+// "Success" or any 4–10 digit OTP.
+const TEST_CARD_FAIL = { number: '4100 2800 0009 0000', expiry: '12/30', cvv: '123', bankPage: 'choose Failure' }
+const TEST_CARD_SUCCESS = { number: '4100 2800 0000 1007', expiry: '12/30', cvv: '123', bankPage: 'choose Success (or enter any 4–10 digit OTP)' }
 
 function loadCheckoutScript() {
   return new Promise((resolve, reject) => {
@@ -249,6 +253,7 @@ export default function LiveDemo({ onBack }) {
             <code>{TEST_CARD_FAIL.expiry}</code> · CVV:{' '}
             <code>{TEST_CARD_FAIL.cvv}</code>
           </p>
+          <p>On Razorpay's mock bank page, <strong>{TEST_CARD_FAIL.bankPage}</strong>.</p>
           <p style={{ color: '#a89a86' }}>Waiting for the Checkout attempt to complete…</p>
         </div>
       )}
@@ -284,6 +289,7 @@ export default function LiveDemo({ onBack }) {
             <code>{TEST_CARD_SUCCESS.expiry}</code> · CVV:{' '}
             <code>{TEST_CARD_SUCCESS.cvv}</code>
           </p>
+          <p>On Razorpay's mock bank page, <strong>{TEST_CARD_SUCCESS.bankPage}</strong>.</p>
           <p style={{ color: '#a89a86' }}>Waiting for the recovery Checkout attempt to complete…</p>
         </div>
       )}
