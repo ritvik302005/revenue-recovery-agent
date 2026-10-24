@@ -2,7 +2,7 @@
 
 How the system is built **today** (verified by the audit of 2026-10-24) and the **target** after Phases 1–5. Update the "Current" sections as tasks land; when a target item is done, move it up.
 
-> The root-level `ARCHITECTURE.md` and `EVALUATION_REPORT.md` are older and partly wrong (in-memory storage, CORS `*`, live demo "not wired", max-attempts diagram). Trust this file. Task P3-7 rewrites the root docs.
+> This file is the authoritative architecture doc. The old root-level `ARCHITECTURE.md`, `PROJECT_STRUCTURE.md` and `EVALUATION_REPORT.md` were removed in P3-7 (they were partly wrong; still in git history). An evaluation doc with real numbers follows the multi-seed run (P4-4).
 
 ---
 
@@ -33,7 +33,23 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | `models.py` | Enums (`FailureReason`, `RecoveryAction`, `Outcome`, `RazorpaySource`, `LiveDemoStage` – unused), Pydantic models |
 | `storage.py` | `set_value` / `get_value` / `delete_value`, optional TTL |
 | `verify_razorpay_connection.py` | Creates one real ₹10 test order to check keys |
-| `tests/` | 30 tests: safety gate, metrics labelling, report-recovery validation |
+| `tests/` | Safety gate, metrics labelling, live-demo integrity (binding, stages, races, retries, signatures), error mapping and id validation, showcase case |
+
+Frontend files (`frontend/src/`):
+
+| File | Role |
+|---|---|
+| `App.jsx` | Hand-written routing between the three views |
+| `api.js` | `API_BASE` from `VITE_API_BASE` |
+| `components/Landing.jsx` | Landing page: hero, status chip, recorded case, agent journey, audit trail, real vs simulated |
+| `components/RecordedCaseCard.jsx` | The real recorded case (or empty state) in the hero |
+| `components/AuditTrailVisual.jsx` | That case's real audit trail |
+| `components/AgentJourney.jsx` | Six-step explanation of the agent's controls |
+| `components/HeadlineMetrics.jsx` | Headline numbers (hardcoded until P3-1) |
+| `components/LiveDemo.jsx` | Live Razorpay Checkout flow |
+| `components/Dashboard.jsx`, `MetricsSection.jsx`, `ResultsTable.jsx` | Batch evaluation |
+| `components/RevenueNetworkBackground.jsx` | Animated canvas background |
+| `hooks/useShowcaseCase.js`, `useHealth.js`, `useCountUp.js`, `useReveal.js` | Data and animation hooks |
 
 ## 3. Endpoints (current)
 
