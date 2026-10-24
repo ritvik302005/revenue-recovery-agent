@@ -4,6 +4,22 @@ import ResultsTable from './ResultsTable.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
+// Says what the run actually was, not what it might have been.
+function describeRun(metrics) {
+  if (!metrics || metrics.error) {
+    return 'Runs a batch of synthetic failed payments through the rule-based recovery agent. ' +
+      'Failure reasons are documented Razorpay codes assigned synthetically; recovery outcomes are simulated.'
+  }
+  const n = metrics.simulated_recovery_summary.batch_size
+  const real = metrics.razorpay_data_provenance.razorpay_test_orders
+  const orders = real === 0
+    ? 'no real Razorpay orders (all order ids local)'
+    : real === n
+      ? `a real Razorpay test-mode order for each`
+      : `${real} real Razorpay test-mode order${real !== 1 ? 's' : ''} and ${n - real} local order id${n - real !== 1 ? 's' : ''}`
+  return `Last run: ${n} synthetic failed payment${n !== 1 ? 's' : ''}, ${orders}. Recovery outcomes are simulated.`
+}
+
 export default function Dashboard({ onBack }) {
   const [metrics, setMetrics] = useState(null)
   const [results, setResults] = useState([])
@@ -43,10 +59,7 @@ export default function Dashboard({ onBack }) {
             </button>
           )}
           <h1 className="title">AI Revenue Recovery Agent — Batch Evaluation</h1>
-          <p className="subtitle">
-            A controlled 60-case batch evaluation with real Razorpay Test Mode
-            order provenance and simulated recovery outcomes.
-          </p>
+          <p className="subtitle">{describeRun(metrics)}</p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <input
