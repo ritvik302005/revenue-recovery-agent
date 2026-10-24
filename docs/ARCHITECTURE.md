@@ -68,18 +68,20 @@ Frontend files (`frontend/src/`):
 
 Out-of-order or repeated calls return **409**; unknown sessions **404**. Order and payment ids are validated on every live-demo endpoint (`^order_[A-Za-z0-9]{1,40}$`, `^pay_[A-Za-z0-9]{1,40}$`; signature ≤ 128 chars) → **422** before any Razorpay call. Every stage change is an atomic read-check-write (`storage.update_atomic`).
 
-## 4. Agent (current)
+## 4. Agent
 
 Graph: `classify → select_action → safety_check → execute → (should_replan) → escalate → safety_check …`
 
-- **classify**: logs the failure reason already on the record. Computes nothing.
-- **select_action**: fixed table, failure reason → action.
-- **safety_check**: fraud → `NO_ACTION_FRAUD_HOLD` / `HELD_NO_ACTION`, stop. `attempt_count ≥ 3` → `NO_ACTION_MAX_ATTEMPTS` / `STILL_FAILED`, stop.
-- **execute**: `attempt_count += 1`; success if `random.Random(f"{payment_id}-{attempt}") < RECOVERY_PROBABILITY[(reason, action)]` (default 0.25). Reminder link / support failing → `PENDING_CUSTOMER_ACTION`. Done when recovered or attempt ≥ 3.
-- **should_replan**: replan only if `STILL_FAILED` and attempts < 3.
+All decisions are fixed rules; there is no ML model or LLM.
+
+- **classify**: in the batch, logs the (synthetic) failure reason already on the record; in the live demo, the reason comes from `classify_real_payment_error` (§11).
+- **select_action**: fixed table, failure reason → action (`unknown` → escalate to support).
+- **safety_check** (before every execution): fraud → `NO_ACTION_FRAUD_HOLD` / `HELD_NO_ACTION`, stop. `attempt_count ≥ 3` → `NO_ACTION_MAX_ATTEMPTS` / `STILL_FAILED`, stop.
+- **execute**: `attempt_count += 1`; success if `random.Random(f"{payment_id}-{attempt}") < RECOVERY_PROBABILITY[(reason, action)]` (illustrative, default 0.25). Success → `RECOVERED`, done. Support failing → `PENDING_CUSTOMER_ACTION` (handed to a human), done. Anything else failing, including an unpaid reminder link → `STILL_FAILED`.
+- **should_replan**: `STILL_FAILED` → escalate and go back through `safety_check`, which stops the loop once the budget is used.
 - **escalate**: retry_same → alternate method → reminder link → support; retry_with_delay → alternate method.
 
-Measured behaviour (200 runs × 60): recovery rate 50–88% (mean 66%); outcomes only `recovered` or `pending`; `still_failed` and the max-attempts gate never occur; seed-42 batch of 60 has no fraud case.
+Measured (P4-2, 200 seeds × 60, before P4-3): all four outcomes occur (recovered 8,476; pending 2,102; still failed 1,195; held 227 of 12,000), and the max-attempts gate fired 1,195 times. Before P4-2: only recovered/pending, gate never fired.
 
 ## 5. Live demo flow
 

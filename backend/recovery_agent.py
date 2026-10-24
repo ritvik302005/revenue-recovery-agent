@@ -1,15 +1,14 @@
 """
-AI Revenue Recovery agent.
+Revenue recovery agent: rule-based decisions orchestrated as a LangGraph graph.
 
-Flow (mirrors the sense -> propose -> safety-check -> execute -> replan
-loop used in the microgrid agent):
+    classify_root_cause -> select_recovery_action -> safety_check -> execute_action
+        -> (still failed) escalate_action -> safety_check -> ...
 
-    classify_root_cause -> select_recovery_action -> safety_check
-        -> execute_action -> record_outcome -> (replan if retryable & not maxed)
-
-Hard safety rules are enforced in code, not by the LLM, and always have
-final say — this is the "bar" the track calls out (bounded, gated,
-explainable actions).
+Every decision is a fixed rule (an action table, an escalation table, a
+safety gate); there is no ML model or LLM. The safety gate runs before every
+execution, including each loop, and has the final say: fraud is held, and
+after MAX_ATTEMPTS it stops the loop. In batch mode the outcome of an action
+is simulated (RECOVERY_PROBABILITY below), never real.
 """
 import os
 import random
@@ -24,8 +23,11 @@ from models import (
 MAX_ATTEMPTS = 3
 NO_RETRY_REASONS = {FailureReason.FRAUD_SUSPECTED}
 
-# Deterministic-ish recovery probability per failure reason x action, used to
-# simulate real-world outcomes against Razorpay test-mode payment attempts.
+# ILLUSTRATIVE probabilities, not measured from any real data: used only by
+# the batch simulation to decide whether an action "succeeds". Pairs not
+# listed use DEFAULT_RECOVERY_PROBABILITY. The draw is seeded by
+# (payment_id, attempt), so a seeded batch is reproducible.
+DEFAULT_RECOVERY_PROBABILITY = 0.25
 RECOVERY_PROBABILITY = {
     (FailureReason.CARD_DECLINED, RecoveryAction.SUGGEST_ALTERNATE_METHOD): 0.55,
     (FailureReason.CARD_DECLINED, RecoveryAction.RETRY_WITH_DELAY): 0.20,
@@ -131,16 +133,18 @@ def execute_action(state: AgentState) -> AgentState:
     p.attempt_count += 1
 
     key = (p.failure_reason, action)
-    prob = RECOVERY_PROBABILITY.get(key, 0.25)
+    prob = RECOVERY_PROBABILITY.get(key, DEFAULT_RECOVERY_PROBABILITY)
     rng = random.Random(f"{p.payment_id}-{p.attempt_count}")
     success = rng.random() < prob
 
-    if action in (RecoveryAction.SEND_REMINDER_LINK, RecoveryAction.ESCALATE_TO_SUPPORT) and not success:
-        state["outcome"] = Outcome.PENDING_CUSTOMER_ACTION
-    elif success:
+    if success:
         state["outcome"] = Outcome.RECOVERED
         state["amount_recovered"] = p.amount
+    elif action == RecoveryAction.ESCALATE_TO_SUPPORT:
+        # Handed to a human: the agent's part ends here, waiting on support.
+        state["outcome"] = Outcome.PENDING_CUSTOMER_ACTION
     else:
+        # Includes an unpaid reminder link: it counts as a failed attempt.
         state["outcome"] = Outcome.STILL_FAILED
 
     _log(state, "execute",
@@ -148,17 +152,18 @@ def execute_action(state: AgentState) -> AgentState:
          f"simulated recovery outcome. Result: {state['outcome'].value}.",
          data={"amount": p.amount, "attempt": p.attempt_count})
 
-    state["done"] = state["outcome"] in (Outcome.RECOVERED,) or p.attempt_count >= MAX_ATTEMPTS
+    # The loop doesn't stop itself at MAX_ATTEMPTS: a still-failed payment
+    # goes back through safety_check, which enforces the retry budget.
+    state["done"] = state["outcome"] in (Outcome.RECOVERED, Outcome.PENDING_CUSTOMER_ACTION)
     return state
 
 
 def should_replan(state: AgentState) -> str:
-    """Replan loop: if still failed and retries remain and it's a
-    retryable outcome, loop back to action selection (e.g. escalate
-    tier), else end."""
+    """Still failed -> escalate and go back through the safety gate (which
+    stops the loop once the retry budget is used); otherwise end."""
     if state["done"]:
         return "end"
-    if state["outcome"] == Outcome.STILL_FAILED and state["payment"].attempt_count < MAX_ATTEMPTS:
+    if state["outcome"] == Outcome.STILL_FAILED:
         return "replan"
     return "end"
 
@@ -175,8 +180,8 @@ def escalate_action(state: AgentState) -> AgentState:
     prev = state["action"]
     state["action"] = escalation.get(prev, RecoveryAction.ESCALATE_TO_SUPPORT)
     _log(state, "replan",
-         f"First attempt still failed. Escalating strategy from '{prev.value}' to "
-         f"'{state['action'].value}'.")
+         f"Attempt {state['payment'].attempt_count} still failed. Escalating strategy from "
+         f"'{prev.value}' to '{state['action'].value}'.")
     return state
 
 
