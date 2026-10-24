@@ -69,7 +69,7 @@ export default function ResultsTable({ results }) {
                     <div className="audit-panel">
                       {r.raw_error_code && (
                         <div style={{ marginBottom: 10, color: '#a89a86' }}>
-                          Razorpay error code: <code>{r.raw_error_code}</code>
+                          Documented Razorpay error code (assigned synthetically): <code>{r.raw_error_code}</code>
                           {r.razorpay_order_id && (
                             <> · Order: <code>{r.razorpay_order_id}</code></>
                           )}

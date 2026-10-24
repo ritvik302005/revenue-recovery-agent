@@ -69,16 +69,16 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
       <div className="landing-hero-inner" id="overview">
         <div className="landing-hero-text">
           <RevealSection>
-            <div className="landing-eyebrow">AUTONOMOUS REVENUE OPERATIONS</div>
+            <div className="landing-eyebrow">RULE-BASED PAYMENT RECOVERY</div>
             <h1 className="landing-title">
               Recover revenue<br />before it <span className="landing-title-accent">disappears.</span>
             </h1>
             <p className="landing-subtitle">
-              Find revenue that's slipping away and win it back. Detects
-              revenue at risk, determines the right intervention, and
-              executes a bounded recovery workflow — from failed payments to
-              overdue receivables — with a hard safety gate no LLM can
-              override.
+              When a Razorpay payment fails, the agent reads the real error,
+              picks a recovery action from a fixed policy, checks it against
+              hard safety rules — fraud holds and a three-attempt retry
+              budget — and logs every decision. Rule-based by design,
+              orchestrated with LangGraph.
             </p>
             <div className="landing-cta-row">
               <button className="run-btn landing-cta landing-cta-primary" onClick={onEnterDemo}>
@@ -120,18 +120,18 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
                   degrades, a checkout gets abandoned, a subscription fails.
                   Most systems either don't retry at all, or retry blindly
                   without understanding why it failed — this agent closes
-                  the loop from detecting the problem to diagnosing it,
-                  choosing the right intervention, and recovering the
-                  money.
+                  the loop from the failure to its documented cause, the
+                  right intervention, and a verified result.
                 </p>
               </div>
               <div>
                 <div className="landing-track-label">THE BAR</div>
                 <p className="landing-track-text">
-                  Don't just identify the problem. Every money action is
-                  explainable, bounded, and gated — measured recovery
-                  across a batch, with compliant escalation, stopping
-                  rules, and a full audit trail on every decision.
+                  Every recovery action is explainable, bounded and gated:
+                  a fixed policy, hard stopping rules, escalation to support,
+                  and a full audit trail on every decision — evaluated on a
+                  simulated batch, and proven end to end on a real Razorpay
+                  test payment.
                 </p>
               </div>
             </div>
@@ -207,9 +207,10 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
               </div>
               <p className="compare-card-body">
                 A single real Razorpay order, a real Checkout failure using
-                their documented test card, and a real recovery payment.
-                Every field comes straight from Razorpay's API — verified
-                only when their own status says captured.
+                their documented test card, and a real recovery payment on a
+                recovery order the server creates. Order, payment and error
+                data come from Razorpay's API; a recovery counts only when
+                Razorpay reports it captured and Checkout's signature verifies.
               </p>
             </div>
           </RevealSection>
@@ -218,10 +219,10 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
             <div className="compare-card compare-card-simulated">
               <div className="compare-card-badge">
                 <span className="compare-card-dot" />
-                60-CASE CONTROLLED EVALUATION
+                BATCH EVALUATION (SIMULATED)
               </div>
               <div className="compare-card-flow">
-                <span>60 cases</span>
+                <span>synthetic cases</span>
                 <span className="compare-arrow">→</span>
                 <span>agent decisions</span>
                 <span className="compare-arrow">→</span>
