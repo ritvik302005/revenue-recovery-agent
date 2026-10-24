@@ -171,6 +171,55 @@ def test_failure_payment_from_another_session_is_rejected(recovery_ready):
     assert _report_failure(recovery_ready, FAILED_ON_A, order_id="order_B").status_code == 400
 
 
+# ---- P1-4: retry after a failed recovery, within the retry budget -------------
+
+def _fail_attempt(client, recovery_order_id):
+    r = _report_recovery(client, _payment(f"pay_x_{recovery_order_id}", recovery_order_id, "failed"),
+                         recovery_order_id)
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_failed_recovery_can_be_retried_with_a_new_order(recovery_ready, isolated_state_db):
+    first = _fail_attempt(recovery_ready, "order_R1")
+    assert first["recovery_outcome"] == "still_failed"
+    assert first["stage"] == "recovery_failed"
+    assert first["recovery_attempts"] == 1
+
+    assert _create_recovery(recovery_ready, "order_R2").status_code == 200
+    r = _report_recovery(recovery_ready, _payment("pay_ok2", "order_R2", "captured"), "order_R2")
+    assert r.status_code == 200
+    assert r.json()["recovery_outcome"] == "recovered"
+    assert r.json()["recovery_attempts"] == 2
+
+
+def test_stale_recovery_order_is_rejected_after_a_new_one(recovery_ready):
+    _fail_attempt(recovery_ready, "order_R1")
+    assert _create_recovery(recovery_ready, "order_R2").status_code == 200
+    r = _report_recovery(recovery_ready, _payment("pay_late", "order_R1", "captured"), "order_R1")
+    assert r.status_code == 400
+
+
+def test_safety_gate_blocks_the_attempt_after_max_attempts(recovery_ready, isolated_state_db):
+    from recovery_agent import MAX_ATTEMPTS
+    _fail_attempt(recovery_ready, "order_R1")
+    for n in range(2, MAX_ATTEMPTS + 1):
+        assert _create_recovery(recovery_ready, f"order_R{n}").status_code == 200
+        _fail_attempt(recovery_ready, f"order_R{n}")
+
+    with patch("main.create_real_order") as create:
+        r = recovery_ready.post("/api/live-demo/create-recovery-order", params={"order_id": "order_A"})
+    assert r.status_code == 409
+    assert "Safety gate" in r.json()["detail"]
+    create.assert_not_called()          # no real order once the budget is used
+
+    record = isolated_state_db._get_demo_record("order_A")
+    assert record["stage"] == "held"
+    assert record["recovery_attempts"] == MAX_ATTEMPTS
+    assert "MAX_ATTEMPTS" in record["audit_trail"][-1]["detail"]
+    assert _create_recovery(recovery_ready, "order_R9").status_code == 409
+
+
 # ---- races -------------------------------------------------------------------
 
 def test_two_simultaneous_recovery_reports_record_only_one(recovery_ready, isolated_state_db):

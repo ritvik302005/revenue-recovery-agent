@@ -285,18 +285,29 @@ export default function LiveDemo({ onBack }) {
 
       {stage === STAGES.DONE && result && (
         <div className="audit-panel">
-          <div style={{ color: '#4a9d7f', fontWeight: 600, marginBottom: 8 }}>
+          <div style={{ color: result.recovery_outcome === 'recovered' ? '#4a9d7f' : '#c47f3a', fontWeight: 600, marginBottom: 8 }}>
             {result.recovery_outcome === 'recovered'
               ? '✓ Recovered — verified by Razorpay Test Mode'
               : `Real recovery outcome: ${result.recovery_outcome.replace(/_/g, ' ')}`}
           </div>
           <p>Amount recovered: ₹{(result.amount_recovered / 100).toFixed(2)}</p>
+          <p>Recovery attempts: {result.recovery_attempts} of {result.max_attempts}</p>
           <p style={{ fontSize: 12, color: '#4a9d7f', marginTop: 10 }}>
             outcome_is_simulated: false — this result came from a real
             Razorpay Checkout payment status, not a probability model.
           </p>
+          {result.stage === 'recovery_failed' && result.recovery_attempts < result.max_attempts && (
+            <button className="run-btn" onClick={attemptRecovery} disabled={busy} style={{ marginTop: 10, marginRight: 10 }}>
+              {busy ? 'Creating recovery order…' : 'Try Another Recovery Attempt'}
+            </button>
+          )}
+          {result.stage === 'recovery_failed' && result.recovery_attempts >= result.max_attempts && (
+            <p style={{ color: '#c47f3a' }}>
+              Retry budget used — the safety gate allows no further attempts on this payment.
+            </p>
+          )}
           <button className="run-btn" onClick={reset} style={{ marginTop: 10 }}>
-            Run Again
+            Start Over
           </button>
         </div>
       )}

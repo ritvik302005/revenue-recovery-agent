@@ -14,9 +14,9 @@ import os
 import time
 from collections import defaultdict
 
-from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult, LiveDemoStage
+from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult, LiveDemoStage, FailureReason
 from simulate_batch import generate_batch
-from recovery_agent import run_recovery, select_recovery_action, safety_check, AgentState
+from recovery_agent import run_recovery, select_recovery_action, safety_check, AgentState, MAX_ATTEMPTS
 from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
     create_real_order, fetch_real_payment, classify_real_payment_error,
@@ -190,6 +190,22 @@ def _require_stage(record: Optional[dict], order_id: str, allowed: set) -> dict:
     return record
 
 
+def _agent_state(failure_reason: FailureReason, attempt_count: int, payment_id: str, audit_trail: list) -> AgentState:
+    """Minimal agent state for running single nodes (select_recovery_action,
+    safety_check) on a live-demo payment instead of a batch PaymentRecord."""
+    class _Stub:
+        pass
+    stub_payment = _Stub()
+    stub_payment.failure_reason = failure_reason
+    stub_payment.attempt_count = attempt_count
+    stub_payment.payment_id = payment_id
+    return {
+        "payment": stub_payment, "audit_trail": audit_trail,
+        "action": None, "outcome": None, "amount_recovered": 0,
+        "reasoning": "", "done": False,
+    }
+
+
 def _transition(order_id: str, allowed: set, update) -> dict:
     """Move a live-demo session forward atomically.
 
@@ -290,18 +306,7 @@ def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
 
     # Reuse the same select_recovery_action / safety_check nodes the
     # batch agent uses, on a minimal state.
-    class _Stub:
-        pass
-    stub_payment = _Stub()
-    stub_payment.failure_reason = failure_reason
-    stub_payment.attempt_count = 0
-    stub_payment.payment_id = payment_id
-
-    state: AgentState = {
-        "payment": stub_payment, "audit_trail": audit_trail,
-        "action": None, "outcome": None, "amount_recovered": 0,
-        "reasoning": "", "done": False,
-    }
+    state = _agent_state(failure_reason, attempt_count=0, payment_id=payment_id, audit_trail=audit_trail)
     state = select_recovery_action(state)
     state = safety_check(state)
 
@@ -334,7 +339,24 @@ def create_recovery_order(order_id: str = Query(...)):
     only accepts a payment on exactly this order, so the browser can't
     pick an unrelated (or the original) order as the "recovery".
     """
-    record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.FAILURE_RECORDED})
+    retryable = {LiveDemoStage.FAILURE_RECORDED, LiveDemoStage.RECOVERY_FAILED}
+    record = _require_stage(_get_demo_record(order_id), order_id, retryable)
+
+    # The same hard safety gate the batch agent uses, with the recovery
+    # attempts made so far: once MAX_ATTEMPTS are used, no new order.
+    attempts = record.get("recovery_attempts", 0)
+    gate = safety_check(_agent_state(FailureReason(record["failure_reason"]), attempts,
+                                     record["original_payment_id"], []))
+    if gate["done"]:
+        blocked = gate["audit_trail"][-1].model_dump(mode="json")
+        _transition(order_id, retryable, lambda record: {
+            "stage": LiveDemoStage.HELD.value,
+            "audit_trail": record.get("audit_trail", []) + [blocked],
+        })
+        raise HTTPException(
+            status_code=409,
+            detail=f"Safety gate blocked another recovery attempt: {attempts} of {MAX_ATTEMPTS} attempts used.",
+        )
 
     receipt = f"live_recovery_{uuid.uuid4().hex[:16]}"
     try:
@@ -342,13 +364,14 @@ def create_recovery_order(order_id: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not create a real Razorpay recovery order: {e}")
 
-    _transition(order_id, {LiveDemoStage.FAILURE_RECORDED}, lambda record: {
+    _transition(order_id, retryable, lambda record: {
         "stage": LiveDemoStage.RECOVERY_ORDER_CREATED.value,
         "current_recovery_order_id": order["id"],
         "audit_trail": record.get("audit_trail", []) + [
             AuditLogEntry(payment_id=record["original_payment_id"], step="execute",
-                          detail=f"Created recovery order {order['id']} for the original amount "
-                                 f"({record['amount']} paise).").model_dump(mode="json")
+                          detail=f"Recovery attempt {attempts + 1} of {MAX_ATTEMPTS}: created order "
+                                 f"{order['id']} for the original amount ({record['amount']} paise)."
+                          ).model_dump(mode="json")
         ],
     })
     return order
@@ -434,12 +457,14 @@ def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query
         )
         return {
             "stage": (LiveDemoStage.RECOVERED if recovered else LiveDemoStage.RECOVERY_FAILED).value,
+            "recovery_attempts": record.get("recovery_attempts", 0) + 1,
             "audit_trail": audit_trail,
             "result": result.model_dump(mode="json"),
         }
 
     stored = _transition(order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED}, record_outcome)
-    return {**stored["result"], "stage": stored["stage"]}
+    return {**stored["result"], "stage": stored["stage"],
+            "recovery_attempts": stored["recovery_attempts"], "max_attempts": MAX_ATTEMPTS}
 
 
 if __name__ == "__main__":
