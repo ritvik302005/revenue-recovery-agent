@@ -47,7 +47,7 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | POST | `/api/live-demo/create-order` | API key if set | 10/min/IP | yes | ₹1–₹1,000, receipt generated server-side |
 | POST | `/api/live-demo/report-failure?order_id&payment_id` | API key if set | **none** | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; **no status check yet (P2-1)** |
 | POST | `/api/live-demo/create-recovery-order?order_id` | API key if set | 10/min/IP | yes | Stage `failure_recorded` or `recovery_failed` → `recovery_order_created`; runs `safety_check` with `recovery_attempts` first (≥ 3 → stage `held`, 409, no order); server creates the order for the original amount and stores `current_recovery_order_id` |
-| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id` | API key if set | **none** | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording |
+| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id&razorpay_signature` | API key if set | **none** | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording; a **captured** payment needs a valid Checkout signature (400 otherwise); failed attempts need none |
 
 Out-of-order or repeated calls return **409**; unknown sessions **404**. Every stage change is an atomic read-check-write (`storage.update_atomic`).
 
@@ -77,7 +77,8 @@ create-recovery-order(order_id) ──► server creates order, stores current_r
 Fixed: recovery order bound to the session (B2); stages only move forward, replays get 409 (B3); concurrent reports record once.
 Payment reuse across sessions is rejected (P1-3, by the binding).
 Retries (P1-4): from `recovery_failed`, `create-recovery-order` starts a new attempt; `report-recovery` counts `recovery_attempts`; the agent's `safety_check` blocks attempt 4 (stage `held`, logged in the audit trail). The response carries `recovery_attempts` and `max_attempts`.
-Still open: no status check on the failure (P2-1); no signature check (P1-5).
+Signatures (P1-5): `razorpay_client.verify_checkout_signature` (SDK `utility.verify_payment_signature`: HMAC-SHA256 of `order_id|payment_id` with the key secret, constant-time compare, no API call). Required before a captured recovery is recorded; Razorpay's `payment.failed` event carries no signature, so failed attempts are recorded from the fetched status alone.
+Still open: no status check on the failure (P2-1).
 
 ### Target (Phases 1–2)
 ```

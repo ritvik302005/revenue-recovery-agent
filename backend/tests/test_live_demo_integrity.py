@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
+from conftest import sign
+
 
 def _order(order_id, amount=1000):
     return {"id": order_id, "amount": amount, "currency": "INR", "status": "created"}
@@ -41,12 +43,18 @@ def _create_recovery(client, recovery_order_id="order_R1", order_id="order_A"):
         return client.post("/api/live-demo/create-recovery-order", params={"order_id": order_id})
 
 
-def _report_recovery(client, payment, recovery_order_id, order_id="order_A"):
+def _report_recovery(client, payment, recovery_order_id, order_id="order_A", signature="auto"):
+    """Report a recovery attempt. A captured payment gets the signature
+    Checkout would return for (recovery_order_id, payment id) unless the
+    test passes its own (or None)."""
+    params = {"order_id": order_id, "recovery_order_id": recovery_order_id,
+              "recovery_payment_id": payment["id"]}
+    if signature == "auto":
+        signature = sign(recovery_order_id, payment["id"]) if payment["status"] == "captured" else None
+    if signature is not None:
+        params["razorpay_signature"] = signature
     with patch("main.fetch_real_payment", return_value=payment):
-        return client.post("/api/live-demo/report-recovery", params={
-            "order_id": order_id, "recovery_order_id": recovery_order_id,
-            "recovery_payment_id": payment["id"],
-        })
+        return client.post("/api/live-demo/report-recovery", params=params)
 
 
 @pytest.fixture()
@@ -220,6 +228,30 @@ def test_safety_gate_blocks_the_attempt_after_max_attempts(recovery_ready, isola
     assert _create_recovery(recovery_ready, "order_R9").status_code == 409
 
 
+# ---- P1-5: Checkout signature on a successful recovery -------------------------
+
+@pytest.mark.parametrize("signature", [
+    None,                                   # missing
+    "0" * 64,                               # wrong
+    "not-hex",                              # malformed
+    sign("order_A", "pay_ok"),              # signed for the original order, not the recovery order
+    sign("order_R1", "pay_other"),          # signed for a different payment
+])
+def test_captured_recovery_needs_a_valid_signature(recovery_ready, isolated_state_db, signature):
+    r = _report_recovery(recovery_ready, _payment("pay_ok", "order_R1", "captured"), "order_R1",
+                         signature=signature)
+    assert r.status_code == 400
+    assert "signature" in r.json()["detail"]
+    assert isolated_state_db._get_demo_record("order_A")["stage"] == "recovery_order_created"
+
+
+def test_failed_recovery_attempt_needs_no_signature(recovery_ready):
+    # Razorpay's payment.failed event carries no signature.
+    r = _report_recovery(recovery_ready, _payment("pay_x", "order_R1", "failed"), "order_R1", signature=None)
+    assert r.status_code == 200
+    assert r.json()["recovery_outcome"] == "still_failed"
+
+
 # ---- races -------------------------------------------------------------------
 
 def test_two_simultaneous_recovery_reports_record_only_one(recovery_ready, isolated_state_db):
@@ -234,7 +266,8 @@ def test_two_simultaneous_recovery_reports_record_only_one(recovery_ready, isola
 
     def submit():
         try:
-            main.report_recovery(order_id="order_A", recovery_payment_id="pay_ok", recovery_order_id="order_R1")
+            main.report_recovery(order_id="order_A", recovery_payment_id="pay_ok", recovery_order_id="order_R1",
+                                 razorpay_signature=sign("order_R1", "pay_ok"))
             outcomes.append(200)
         except HTTPException as e:
             outcomes.append(e.status_code)

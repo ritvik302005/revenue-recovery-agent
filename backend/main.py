@@ -20,6 +20,7 @@ from recovery_agent import run_recovery, select_recovery_action, safety_check, A
 from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
     create_real_order, fetch_real_payment, classify_real_payment_error,
+    verify_checkout_signature,
 )
 from pydantic import BaseModel, Field
 import uuid
@@ -378,11 +379,17 @@ def create_recovery_order(order_id: str = Query(...)):
 
 
 @app.post("/api/live-demo/report-recovery", dependencies=[Depends(require_api_key)])
-def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query(...), recovery_order_id: str = Query(...)):
+def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query(...),
+                    recovery_order_id: str = Query(...), razorpay_signature: Optional[str] = Query(None)):
     """
     Called after the user completes the recovery Checkout on the order
     from /create-recovery-order. Fetches the real payment status — this
     is a genuinely real outcome, not simulated.
+
+    A captured payment also needs the razorpay_signature Checkout returned
+    on success. A failed attempt has no signature (Razorpay's
+    payment.failed event doesn't carry one) and is recorded from the
+    fetched status alone.
     """
     record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED})
     if recovery_order_id != record.get("current_recovery_order_id") or recovery_order_id == order_id:
@@ -425,6 +432,12 @@ def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query
             detail=f"Recovery payment {recovery_payment_id} is '{real_status}', not final yet. Try again shortly.",
         )
     recovered = real_status == "captured"
+    if recovered and not verify_checkout_signature(recovery_order_id, recovery_payment_id, razorpay_signature):
+        raise HTTPException(
+            status_code=400,
+            detail="Missing or invalid razorpay_signature for this recovery payment; "
+                   "a recovery is only recorded with Checkout's signed success response.",
+        )
 
     outcome = Outcome.RECOVERED if recovered else Outcome.STILL_FAILED
     amount_recovered = payment.get("amount", 0) if recovered else 0

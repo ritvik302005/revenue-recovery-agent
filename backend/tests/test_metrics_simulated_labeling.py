@@ -5,6 +5,8 @@ that contract at the API boundary, not just in code comments.
 """
 from unittest.mock import patch
 
+from conftest import sign
+
 
 def test_metrics_labels_recovery_as_simulated_not_real(client):
     r = client.post("/api/batch/run", params={"n": 20, "try_live_orders": False})
@@ -97,7 +99,8 @@ def test_live_demo_result_is_never_labeled_simulated(client, isolated_state_db):
     with patch("main.fetch_real_payment", return_value=matching_payment):
         r = client.post(
             "/api/live-demo/report-recovery",
-            params={"order_id": "order_live", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y"},
+            params={"order_id": "order_live", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y",
+                    "razorpay_signature": sign("order_R", "pay_Y")},
         )
     assert r.status_code == 200
     assert r.json()["outcome_is_simulated"] is False

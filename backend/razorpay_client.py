@@ -93,6 +93,27 @@ def fetch_real_payment(payment_id: str) -> dict:
     return client.payment.fetch(payment_id)
 
 
+def verify_checkout_signature(order_id: str, payment_id: str, signature: Optional[str]) -> bool:
+    """
+    Checks the razorpay_signature that Checkout hands the browser on a
+    successful payment: HMAC-SHA256 of "order_id|payment_id" with the key
+    secret, verified by the SDK (constant-time compare). Proves the success
+    callback came from Razorpay for exactly this order and payment.
+    Local computation only — no API call.
+    """
+    if not signature or not RAZORPAY_KEY_SECRET:
+        return False
+    client = razorpay.Client(auth=(RAZORPAY_KEY_ID or "", RAZORPAY_KEY_SECRET))
+    try:
+        return bool(client.utility.verify_payment_signature({
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature": signature,
+        }))
+    except razorpay.errors.SignatureVerificationError:
+        return False
+
+
 def classify_real_payment_error(payment: dict) -> tuple:
     """
     Maps a REAL Razorpay payment object's error_reason (from

@@ -87,7 +87,9 @@ export default function LiveDemo({ onBack }) {
           // Shouldn't normally reach here on a genuinely failing card —
           // Checkout's own failure handler below covers that path.
         } else {
-          await handleRecoverySuccess(order.id, orderData.id, response.razorpay_payment_id)
+          // Checkout's signed success response: the backend verifies the
+          // signature before it records a recovery.
+          await handleRecoverySuccess(order.id, orderData.id, response.razorpay_payment_id, response.razorpay_signature)
         }
       },
       modal: {
@@ -149,13 +151,16 @@ export default function LiveDemo({ onBack }) {
     }
   }
 
-  async function handleRecoverySuccess(originalOrderId, recoveryOrderId, recoveryPaymentId) {
+  async function handleRecoverySuccess(originalOrderId, recoveryOrderId, recoveryPaymentId, signature) {
     setBusy(true)
     try {
-      const res = await fetch(
-        `${API_BASE}/api/live-demo/report-recovery?order_id=${originalOrderId}&recovery_order_id=${recoveryOrderId}&recovery_payment_id=${recoveryPaymentId}`,
-        { method: 'POST' }
-      )
+      const params = new URLSearchParams({
+        order_id: originalOrderId,
+        recovery_order_id: recoveryOrderId,
+        recovery_payment_id: recoveryPaymentId,
+      })
+      if (signature) params.set('razorpay_signature', signature)
+      const res = await fetch(`${API_BASE}/api/live-demo/report-recovery?${params}`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Failed to report recovery')
       setResult(data)

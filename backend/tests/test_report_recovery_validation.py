@@ -5,6 +5,8 @@ original amount, in the expected currency.
 """
 from unittest.mock import patch
 
+from conftest import sign
+
 
 def _seed_failure_recorded(main, order_id="order_A", amount=1000, recovery_order_id="order_R"):
     """Directly seed a live-demo record in the 'recovery_order_created'
@@ -74,7 +76,8 @@ def test_recovery_accepted_when_everything_matches(client, isolated_state_db):
     with patch("main.fetch_real_payment", return_value=matching_payment):
         r = client.post(
             "/api/live-demo/report-recovery",
-            params={"order_id": "order_A", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y"},
+            params={"order_id": "order_A", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y",
+                    "razorpay_signature": sign("order_R", "pay_Y")},
         )
     assert r.status_code == 200
     body = r.json()

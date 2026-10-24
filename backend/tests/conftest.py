@@ -1,6 +1,8 @@
 """
 Shared pytest fixtures for the backend test suite.
 """
+import hashlib
+import hmac
 import os
 import sys
 import uuid
@@ -8,6 +10,22 @@ import uuid
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+# A fixed key secret for signature checks, so tests never depend on the
+# real backend/.env.
+TEST_KEY_SECRET = "test_secret_for_signature_checks"
+
+
+@pytest.fixture(autouse=True)
+def fixed_signing_secret(monkeypatch):
+    import razorpay_client
+    monkeypatch.setattr(razorpay_client, "RAZORPAY_KEY_SECRET", TEST_KEY_SECRET)
+
+
+def sign(order_id: str, payment_id: str) -> str:
+    """The razorpay_signature Checkout would return for this order and
+    payment, computed independently of the SDK."""
+    return hmac.new(TEST_KEY_SECRET.encode(), f"{order_id}|{payment_id}".encode(), hashlib.sha256).hexdigest()
 
 
 @pytest.fixture()
