@@ -1,0 +1,29 @@
+# Secrets (keep .env.example files)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Local state
+state.db
+*.db-journal
+
+# Node / Vite
+node_modules/
+dist/
+
+# Deployment CLIs
+.vercel/
+
+# OS / editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/

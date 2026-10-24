@@ -1,0 +1,379 @@
+"""
+FastAPI application for the AI Revenue Recovery agent.
+
+Endpoints:
+  POST /api/batch/run       - generate a batch and run the recovery agent on it
+  GET  /api/batch/results   - fetch the last run's results
+  GET  /api/batch/metrics   - summary metrics, split real vs simulated
+  GET  /api/health          - basic health check + Razorpay connectivity status
+"""
+from fastapi import FastAPI, Query, HTTPException, Header, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+import os
+import time
+from collections import defaultdict
+
+from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult
+from simulate_batch import generate_batch
+from recovery_agent import run_recovery, select_recovery_action, safety_check, AgentState
+from razorpay_client import (
+    RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
+    create_real_order, fetch_real_payment, classify_real_payment_error,
+)
+from pydantic import BaseModel, Field
+import uuid
+import storage
+
+app = FastAPI(title="AI Revenue Recovery Agent")
+
+# ---- CORS: allow only known frontend origin(s), not "*" ----
+# Set ALLOWED_ORIGINS in the environment to a comma-separated list for
+# production, e.g. "https://app.example.com,https://staging.example.com".
+# Falls back to local Vite dev origins when unset, for local development.
+_allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS = (
+    [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+    if _allowed_origins_env
+    else ["http://localhost:5173", "http://localhost:3000"]
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
+)
+
+# ---- API-key authorization ----
+# Set API_KEY in the environment to require it on state-changing
+# endpoints (order creation, batch runs, live-demo reporting). If unset
+# (e.g. local dev), these endpoints stay open — same as before.
+API_KEY = os.environ.get("API_KEY")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key.")
+
+
+# ---- Rate limiting ----
+# Simple in-memory sliding-window limiter, per client IP, for the
+# order-creation endpoints (each call hits Razorpay's real API). Good
+# enough for a single-process deployment; swap for a shared store
+# (e.g. Redis) if this ever runs behind multiple workers/instances.
+_rate_limit_buckets: dict[str, list] = defaultdict(list)
+RATE_LIMIT_MAX_REQUESTS = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
+
+
+def rate_limit(request: Request):
+    now = time.time()
+    client_ip = request.client.host if request.client else "unknown"
+    bucket = _rate_limit_buckets[client_ip]
+    while bucket and bucket[0] < now - RATE_LIMIT_WINDOW_SECONDS:
+        bucket.pop(0)
+    if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(status_code=429, detail="Too many requests — please slow down and try again shortly.")
+    bucket.append(now)
+
+# In-memory store for the last batch run — fine for a hackathon demo.
+BATCH_RESULTS_KEY = "batch:last_results"
+
+
+def _save_last_results(results: list) -> None:
+    storage.set_value(BATCH_RESULTS_KEY, {"items": [r.model_dump(mode="json") for r in results]})
+
+
+def _load_last_results() -> list:
+    raw = storage.get_value(BATCH_RESULTS_KEY)
+    if not raw:
+        return []
+    return [RecoveryResult(**item) for item in raw["items"]]
+
+
+@app.get("/api/health")
+def health():
+    keys_present = bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+    return {
+        "status": "ok",
+        "razorpay_keys_configured": keys_present,
+        "razorpay_live_connectivity": "unverified",  # flip only after verify_razorpay_connection.py succeeds
+    }
+
+
+@app.post("/api/batch/run", dependencies=[Depends(require_api_key), Depends(rate_limit)])
+def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(True)):
+    batch = generate_batch(n=n, try_live_orders=try_live_orders)
+    results = [run_recovery(p) for p in batch]
+    _save_last_results(results)
+    return {"count": len(results), "results": [r.model_dump() for r in results]}
+
+
+@app.get("/api/batch/results")
+def get_results():
+    results = _load_last_results()
+    return {"count": len(results), "results": [r.model_dump() for r in results]}
+
+
+@app.get("/api/batch/metrics")
+def get_metrics():
+    results = _load_last_results()
+    if not results:
+        raise HTTPException(status_code=404, detail="No batch has been run yet. POST /api/batch/run first.")
+
+    total = len(results)
+
+    live_count = sum(1 for r in results if r.razorpay_source == RazorpaySource.LIVE_TEST_MODE)
+    tagged_count = total - live_count
+
+    recovered = [r for r in results if r.outcome == Outcome.RECOVERED]
+    still_failed = [r for r in results if r.outcome == Outcome.STILL_FAILED]
+    pending = [r for r in results if r.outcome == Outcome.PENDING_CUSTOMER_ACTION]
+    held = [r for r in results if r.outcome == Outcome.HELD_NO_ACTION]
+
+    total_at_risk = sum(r.amount for r in results)
+    total_recovered = sum(r.amount_recovered for r in results)
+
+    by_reason = {}
+    for r in results:
+        key = r.failure_reason.value
+        by_reason.setdefault(key, {"count": 0, "recovered": 0})
+        by_reason[key]["count"] += 1
+        if r.outcome == Outcome.RECOVERED:
+            by_reason[key]["recovered"] += 1
+
+    return {
+        "razorpay_data_provenance": {
+            "note": "These counts describe where each record's order/error data came "
+                     "from. They do NOT describe recovery outcomes, which are always simulated.",
+            "live_test_mode_orders": live_count,
+            "real_order_tagged_failure_orders": tagged_count,
+        },
+        "simulated_recovery_summary": {
+            "note": "Recovery outcomes below are simulated — Razorpay test mode cannot "
+                     "headlessly simulate a customer successfully retrying a payment.",
+            "batch_size": total,
+            "recovered": len(recovered),
+            "still_failed": len(still_failed),
+            "pending_customer_action": len(pending),
+            "held_no_action_fraud": len(held),
+            "recovery_rate_pct": round(len(recovered) / total * 100, 1) if total else 0,
+            "total_amount_at_risk_inr": round(total_at_risk / 100, 2),
+            "total_amount_recovered_inr": round(total_recovered / 100, 2),
+        },
+        "breakdown_by_failure_reason": by_reason,
+    }
+
+
+LIVE_DEMO_KEY_PREFIX = "live_demo:"
+
+
+def _get_demo_record(order_id: str) -> Optional[dict]:
+    return storage.get_value(LIVE_DEMO_KEY_PREFIX + order_id)
+
+
+def _set_demo_record(order_id: str, data: dict) -> None:
+    storage.set_value(LIVE_DEMO_KEY_PREFIX + order_id, data, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+
+
+class CreateDemoOrderRequest(BaseModel):
+    # Paise. Bounded to a sane range for a demo order — ₹1 to ₹1,000 —
+    # so the browser can't request an arbitrarily large or zero/negative
+    # real Razorpay order.
+    amount: int = Field(default=1000, ge=100, le=100_000)
+    # Free-text tag for internal/display purposes only. Bounded length
+    # and character set — this is never sent to Razorpay as the
+    # receipt (see create_demo_order below), so it can't be used to
+    # inject arbitrary content into a real API call.
+    label: str = Field(default="live_demo", min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_\-]+$")
+
+
+@app.get("/api/live-demo/config")
+def live_demo_config():
+    """Frontend needs the public Key ID (safe to expose client-side —
+    this is Razorpay's standard Checkout pattern) to open Checkout."""
+    return {
+        "key_id": RAZORPAY_KEY_ID,
+        "configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
+    }
+
+
+@app.post("/api/live-demo/create-order", dependencies=[Depends(require_api_key), Depends(rate_limit)])
+def create_demo_order(req: CreateDemoOrderRequest):
+    """
+    REAL Razorpay Orders API call. The frontend takes the returned
+    order_id and opens actual Razorpay Checkout against it.
+
+    The receipt is generated server-side — the browser has no way to
+    influence what gets sent to Razorpay as the receipt value.
+    """
+    receipt = f"live_demo_{uuid.uuid4().hex[:16]}"
+    try:
+        order = create_real_order(amount=req.amount, receipt=receipt)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not create a real Razorpay order: {e}")
+    _set_demo_record(order["id"], {"amount": req.amount, "stage": "order_created"})
+    return order
+
+
+@app.post("/api/live-demo/report-failure", dependencies=[Depends(require_api_key)])
+def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
+    """
+    Called after the user completes Checkout with a FAILING test
+    instrument. Fetches the REAL payment object from Razorpay, maps
+    its real error_reason to our taxonomy, then runs the agent's
+    classify -> select_action -> safety_check nodes (not execute —
+    the actual recovery attempt happens via a second real Checkout,
+    see /report-recovery).
+    """
+    order_record = _get_demo_record(order_id)
+    if not order_record:
+        raise HTTPException(status_code=404, detail=f"Unknown order_id '{order_id}'. Call /create-order first.")
+
+    try:
+        payment = fetch_real_payment(payment_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch real payment from Razorpay: {e}")
+
+    # Ownership/amount/currency checks — never trust the caller's
+    # order_id/payment_id pairing without verifying Razorpay's own
+    # payment record actually belongs to that order and amount.
+    if payment.get("order_id") != order_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment {payment_id} belongs to Razorpay order "
+                   f"'{payment.get('order_id')}', not the claimed order_id '{order_id}'.",
+        )
+    if payment.get("amount") != order_record.get("amount"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment amount ({payment.get('amount')}) does not match the "
+                   f"order's expected amount ({order_record.get('amount')}).",
+        )
+    if payment.get("currency") != "INR":
+        raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
+
+    failure_reason, raw_error_code = classify_real_payment_error(payment)
+
+    audit_trail = [
+        AuditLogEntry(payment_id=payment_id, step="classify",
+                      detail=f"Fetched real payment {payment_id} from Razorpay. "
+                             f"error_reason='{payment.get('error_reason')}' mapped to "
+                             f"'{failure_reason.value}'.")
+    ]
+
+    # Reuse the same select_recovery_action / safety_check nodes the
+    # batch agent uses, on a minimal state.
+    class _Stub:
+        pass
+    stub_payment = _Stub()
+    stub_payment.failure_reason = failure_reason
+    stub_payment.attempt_count = 0
+    stub_payment.payment_id = payment_id
+
+    state: AgentState = {
+        "payment": stub_payment, "audit_trail": audit_trail,
+        "action": None, "outcome": None, "amount_recovered": 0,
+        "reasoning": "", "done": False,
+    }
+    state = select_recovery_action(state)
+    state = safety_check(state)
+
+    _set_demo_record(order_id, {
+        **(_get_demo_record(order_id) or {}),
+        "original_payment_id": payment_id,
+        "failure_reason": failure_reason,
+        "raw_error_code": raw_error_code,
+        "recommended_action": state["action"],
+        "safety_check_passed": not state["done"],
+        "stage": "failure_recorded",
+        "audit_trail": [e.model_dump(mode="json") for e in state["audit_trail"]],
+    })
+
+    return {
+        "failure_reason": failure_reason.value,
+        "raw_error_code": raw_error_code,
+        "recommended_action": state["action"].value,
+        "safety_check_passed": not state["done"],
+        "audit_trail": [a.model_dump() for a in state["audit_trail"]],
+    }
+
+
+@app.post("/api/live-demo/report-recovery", dependencies=[Depends(require_api_key)])
+def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query(...), recovery_order_id: str = Query(...)):
+    """
+    Called after the user completes a SECOND real Checkout attempt
+    (with a success test instrument) representing the agent's chosen
+    recovery action. Fetches the real payment status — this is a
+    genuinely real outcome, not simulated.
+    """
+    record = _get_demo_record(order_id)
+    if not record or record.get("stage") != "failure_recorded":
+        raise HTTPException(status_code=404, detail="No recorded failure for this order_id. Call /report-failure first.")
+
+    try:
+        payment = fetch_real_payment(recovery_payment_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch real recovery payment from Razorpay: {e}")
+
+    # Ownership/amount/currency checks — a captured payment only
+    # counts as a recovery if it's genuinely the recovery order's own
+    # payment, for the same amount and currency as the original.
+    if payment.get("order_id") != recovery_order_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment {recovery_payment_id} belongs to Razorpay order "
+                   f"'{payment.get('order_id')}', not the claimed recovery_order_id "
+                   f"'{recovery_order_id}'.",
+        )
+    if payment.get("amount") != record.get("amount"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Recovery payment amount ({payment.get('amount')}) does not match "
+                   f"the original amount ({record.get('amount')}).",
+        )
+    if payment.get("currency") != "INR":
+        raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
+
+    real_status = payment.get("status")  # "captured" = success in Razorpay test mode
+    recovered = real_status == "captured"
+
+    outcome = Outcome.RECOVERED if recovered else Outcome.STILL_FAILED
+    amount_recovered = payment.get("amount", 0) if recovered else 0
+
+    audit_trail = list(record["audit_trail"]) + [
+        AuditLogEntry(
+            payment_id=recovery_payment_id, step="execute",
+            detail=f"Real recovery Checkout attempt completed. Razorpay payment "
+                   f"status='{real_status}'. Outcome: {outcome.value}.",
+        )
+    ]
+
+    result = LiveDemoResult(
+        original_order_id=order_id,
+        original_payment_id=record["original_payment_id"],
+        recovery_order_id=recovery_order_id,
+        recovery_payment_id=recovery_payment_id,
+        amount=record["amount"],
+        failure_reason=record["failure_reason"],
+        raw_error_code=record["raw_error_code"],
+        recommended_action=record["recommended_action"],
+        safety_check_passed=record["safety_check_passed"],
+        recovery_outcome=outcome,
+        outcome_is_simulated=False,
+        amount_recovered=amount_recovered,
+        audit_trail=audit_trail,
+    )
+    _set_demo_record(order_id, {
+        **record,
+        "stage": "recovery_attempted",
+        "result": result.model_dump(mode="json"),
+    })
+
+    return result.model_dump()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
