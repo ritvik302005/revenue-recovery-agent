@@ -91,7 +91,7 @@ def test_recovery_rejected_when_no_failure_was_ever_recorded(client):
     /report-failure must be rejected, not silently accepted."""
     r = client.post(
         "/api/live-demo/report-recovery",
-        params={"order_id": "order_never_seen", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y"},
+        params={"order_id": "order_neverSeen", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y"},
     )
     assert r.status_code == 404
 

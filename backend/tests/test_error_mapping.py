@@ -73,6 +73,45 @@ def test_every_category_has_an_agent_action(category):
         assert state["action"] == RecoveryAction.ESCALATE_TO_SUPPORT
 
 
+# ---- P2-5: malformed ids never reach Razorpay ---------------------------------
+
+BAD_PAYMENT_IDS = ["pay_../orders", "pay_abc/def", "pay_abc?x=1", "pay_", "", "order_abc", "pay_" + "a" * 41, "pay_abc def"]
+BAD_ORDER_IDS = ["order_../payments", "order_a/b", "order_", "", "pay_abc", "order_" + "a" * 41]
+
+
+@pytest.mark.parametrize("payment_id", BAD_PAYMENT_IDS)
+def test_report_failure_rejects_malformed_payment_ids(client, payment_id):
+    with patch("main.fetch_real_payment") as fetch:
+        r = client.post("/api/live-demo/report-failure", params={"order_id": "order_A", "payment_id": payment_id})
+    assert r.status_code == 422
+    fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("order_id", BAD_ORDER_IDS)
+def test_endpoints_reject_malformed_order_ids(client, order_id):
+    with patch("main.fetch_real_payment") as fetch, patch("main.create_real_order") as create:
+        responses = [
+            client.post("/api/live-demo/report-failure", params={"order_id": order_id, "payment_id": "pay_abc"}),
+            client.post("/api/live-demo/create-recovery-order", params={"order_id": order_id}),
+            client.post("/api/live-demo/report-recovery", params={
+                "order_id": order_id, "recovery_order_id": "order_R1", "recovery_payment_id": "pay_abc"}),
+            client.post("/api/live-demo/report-recovery", params={
+                "order_id": "order_A", "recovery_order_id": order_id, "recovery_payment_id": "pay_abc"}),
+        ]
+    assert [r.status_code for r in responses] == [422] * 4
+    fetch.assert_not_called()
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize("payment_id", BAD_PAYMENT_IDS)
+def test_report_recovery_rejects_malformed_payment_ids(client, payment_id):
+    with patch("main.fetch_real_payment") as fetch:
+        r = client.post("/api/live-demo/report-recovery", params={
+            "order_id": "order_A", "recovery_order_id": "order_R1", "recovery_payment_id": payment_id})
+    assert r.status_code == 422
+    fetch.assert_not_called()
+
+
 # ---- through the live-demo endpoint -----------------------------------------
 
 def _report(client, error_reason):

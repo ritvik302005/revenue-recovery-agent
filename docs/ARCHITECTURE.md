@@ -49,7 +49,7 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | POST | `/api/live-demo/create-recovery-order?order_id` | API key if set | 10/min/IP | yes | Stage `failure_recorded` or `recovery_failed` → `recovery_order_created`; runs `safety_check` with `recovery_attempts` first (≥ 3 → stage `held`, 409, no order); server creates the order for the original amount and stores `current_recovery_order_id` |
 | POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id&razorpay_signature` | API key if set | **none** | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording; a **captured** payment needs a valid Checkout signature (400 otherwise); failed attempts need none |
 
-Out-of-order or repeated calls return **409**; unknown sessions **404**. Every stage change is an atomic read-check-write (`storage.update_atomic`).
+Out-of-order or repeated calls return **409**; unknown sessions **404**. Order and payment ids are validated on every live-demo endpoint (`^order_[A-Za-z0-9]{1,40}$`, `^pay_[A-Za-z0-9]{1,40}$`; signature ≤ 128 chars) → **422** before any Razorpay call. Every stage change is an atomic read-check-write (`storage.update_atomic`).
 
 ## 4. Agent (current)
 

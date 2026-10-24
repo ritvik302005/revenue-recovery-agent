@@ -153,9 +153,9 @@ def test_non_final_payment_does_not_record_an_outcome(recovery_ready, isolated_s
 def _second_session(client):
     """Session B with its own recorded failure and recovery order order_R_B."""
     _create_order(client, "order_B")
-    failed_b = _payment("pay_fail_b", "order_B", "failed", error_reason="payment_declined")
+    failed_b = _payment("pay_failB", "order_B", "failed", error_reason="payment_declined")
     assert _report_failure(client, failed_b, order_id="order_B").status_code == 200
-    assert _create_recovery(client, "order_R_B", order_id="order_B").status_code == 200
+    assert _create_recovery(client, "order_RB", order_id="order_B").status_code == 200
 
 
 def test_captured_payment_cannot_recover_a_second_session(recovery_ready):
@@ -165,7 +165,7 @@ def test_captured_payment_cannot_recover_a_second_session(recovery_ready):
     _second_session(recovery_ready)
     # Same captured payment, offered to session B (with A's recovery order, or B's).
     assert _report_recovery(recovery_ready, ok_a, "order_R1", order_id="order_B").status_code == 400
-    assert _report_recovery(recovery_ready, ok_a, "order_R_B", order_id="order_B").status_code == 400
+    assert _report_recovery(recovery_ready, ok_a, "order_RB", order_id="order_B").status_code == 400
 
 
 def test_original_failed_payment_cannot_be_submitted_as_the_recovery(recovery_ready):
@@ -182,7 +182,7 @@ def test_failure_payment_from_another_session_is_rejected(recovery_ready):
 # ---- P1-4: retry after a failed recovery, within the retry budget -------------
 
 def _fail_attempt(client, recovery_order_id):
-    r = _report_recovery(client, _payment(f"pay_x_{recovery_order_id}", recovery_order_id, "failed"),
+    r = _report_recovery(client, _payment(f"pay_x{recovery_order_id.removeprefix('order_')}", recovery_order_id, "failed"),
                          recovery_order_id)
     assert r.status_code == 200
     return r.json()

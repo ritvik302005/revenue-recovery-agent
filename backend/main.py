@@ -169,6 +169,12 @@ def get_metrics():
 
 LIVE_DEMO_KEY_PREFIX = "live_demo:"
 
+# Razorpay ids are a fixed prefix plus letters and digits. Validated before
+# any id reaches the SDK (where it becomes part of a URL path), so values
+# like "pay_../orders" are rejected with 422 and never sent to Razorpay.
+ORDER_ID_PATTERN = r"^order_[A-Za-z0-9]{1,40}$"
+PAYMENT_ID_PATTERN = r"^pay_[A-Za-z0-9]{1,40}$"
+
 
 def _get_demo_record(order_id: str) -> Optional[dict]:
     return storage.get_value(LIVE_DEMO_KEY_PREFIX + order_id)
@@ -260,7 +266,8 @@ def create_demo_order(req: CreateDemoOrderRequest):
 
 
 @app.post("/api/live-demo/report-failure", dependencies=[Depends(require_api_key)])
-def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
+def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
+                   payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN)):
     """
     Called after the user completes Checkout with a FAILING test
     instrument. Fetches the REAL payment object from Razorpay, maps
@@ -346,7 +353,7 @@ def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
 
 
 @app.post("/api/live-demo/create-recovery-order", dependencies=[Depends(require_api_key), Depends(rate_limit)])
-def create_recovery_order(order_id: str = Query(...)):
+def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
     """
     Creates the recovery order for a recorded failure — server-side, for
     the original amount — and binds it to the session. report-recovery
@@ -392,8 +399,10 @@ def create_recovery_order(order_id: str = Query(...)):
 
 
 @app.post("/api/live-demo/report-recovery", dependencies=[Depends(require_api_key)])
-def report_recovery(order_id: str = Query(...), recovery_payment_id: str = Query(...),
-                    recovery_order_id: str = Query(...), razorpay_signature: Optional[str] = Query(None)):
+def report_recovery(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
+                    recovery_payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN),
+                    recovery_order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
+                    razorpay_signature: Optional[str] = Query(None, max_length=128)):
     """
     Called after the user completes the recovery Checkout on the order
     from /create-recovery-order. Fetches the real payment status — this
