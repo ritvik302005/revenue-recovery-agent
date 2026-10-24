@@ -17,11 +17,9 @@ Usage is a tiny key/value API — set_value / get_value / delete_value —
 with values as plain JSON-serializable dicts, and an optional
 ttl_seconds for entries that should expire (e.g. live-demo sessions).
 
-Two atomic operations sit on top of it, for state that must not race:
-- set_if_absent(): write only if the key doesn't exist yet (used to
-  register a payment id as used, exactly once).
-- update_atomic(): read, check and write one key under a lock, so two
-  requests can't both pass the same stage check (live-demo sessions).
+update_atomic() sits on top of it for state that must not race: it
+reads, checks and writes one key under a lock, so two requests can't
+both pass the same stage check (live-demo sessions).
 """
 import json
 import os
@@ -115,34 +113,6 @@ def _live_row(conn: sqlite3.Connection, key: str) -> Optional[dict]:
     if row is None or (row[1] is not None and row[1] < time.time()):
         return None
     return json.loads(row[0])
-
-
-def set_if_absent(key: str, value: dict, ttl_seconds: Optional[int] = None) -> bool:
-    """Store `value` only if `key` doesn't already exist (or has expired).
-    Returns True if this call wrote it, False if the key was already taken."""
-    payload = json.dumps(value)
-    if _redis_client:
-        return bool(_redis_client.set(key, payload, nx=True, ex=ttl_seconds))
-
-    expires_at = (time.time() + ttl_seconds) if ttl_seconds else None
-    conn = _sqlite_conn(autocommit=True)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        if _live_row(conn, key) is not None:
-            conn.execute("ROLLBACK")
-            return False
-        conn.execute(
-            "INSERT OR REPLACE INTO kv_store (key, value, expires_at) VALUES (?, ?, ?)",
-            (key, payload, expires_at),
-        )
-        conn.execute("COMMIT")
-        return True
-    except Exception:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.close()
 
 
 def update_atomic(key: str, fn, ttl_seconds: Optional[int] = None) -> dict:

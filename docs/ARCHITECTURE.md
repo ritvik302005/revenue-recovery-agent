@@ -75,7 +75,8 @@ create-recovery-order(order_id) ──► server creates order, stores current_r
    ──► report-recovery(order_id, recovery_order_id, recovery_payment_id) ──► stage=recovered | recovery_failed
 ```
 Fixed: recovery order bound to the session (B2); stages only move forward, replays get 409 (B3); concurrent reports record once.
-Still open: no status check on the failure (P2-1); a payment ID can be reused across sessions (P1-3); `recovery_failed` can't start a new attempt yet (P1-4); no signature check (P1-5).
+Payment reuse across sessions is rejected (P1-3, by the binding).
+Still open: no status check on the failure (P2-1); `recovery_failed` can't start a new attempt yet (P1-4); no signature check (P1-5).
 
 ### Target (Phases 1–2)
 ```
@@ -103,8 +104,9 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 - Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600).
 - SQLite file `backend/state.db` by default; Redis when `REDIS_URL` is set (untested).
-- Atomic operations (P1-2): `set_if_absent(key, value, ttl)` and `update_atomic(key, fn, ttl)`. SQLite uses `BEGIN IMMEDIATE`; Redis uses `WATCH`/`MULTI` with retry. `fn` may raise to abort without writing.
-- Target: a used-payment registry (P1-3); Redis/Upstash in deployment (Render's disk is not persistent).
+- Atomic operation (P1-2): `update_atomic(key, fn, ttl)`. SQLite uses `BEGIN IMMEDIATE`; Redis uses `WATCH`/`MULTI` with retry. `fn` may raise to abort without writing.
+- No used-payment registry: binding each recovery order to one session (P1-1) plus Razorpay's one-payment-one-order rule already prevents reuse (P1-3, tested).
+- Target: Redis/Upstash in deployment (Render's disk is not persistent).
 
 ## 8. Configuration
 

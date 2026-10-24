@@ -140,6 +140,37 @@ def test_non_final_payment_does_not_record_an_outcome(recovery_ready, isolated_s
     assert r.status_code == 200
 
 
+# ---- P1-3: a payment can't be counted twice ----------------------------------
+
+def _second_session(client):
+    """Session B with its own recorded failure and recovery order order_R_B."""
+    _create_order(client, "order_B")
+    failed_b = _payment("pay_fail_b", "order_B", "failed", error_reason="payment_declined")
+    assert _report_failure(client, failed_b, order_id="order_B").status_code == 200
+    assert _create_recovery(client, "order_R_B", order_id="order_B").status_code == 200
+
+
+def test_captured_payment_cannot_recover_a_second_session(recovery_ready):
+    ok_a = _payment("pay_ok", "order_R1", "captured")
+    assert _report_recovery(recovery_ready, ok_a, "order_R1").status_code == 200
+
+    _second_session(recovery_ready)
+    # Same captured payment, offered to session B (with A's recovery order, or B's).
+    assert _report_recovery(recovery_ready, ok_a, "order_R1", order_id="order_B").status_code == 400
+    assert _report_recovery(recovery_ready, ok_a, "order_R_B", order_id="order_B").status_code == 400
+
+
+def test_original_failed_payment_cannot_be_submitted_as_the_recovery(recovery_ready):
+    # Even if it were somehow captured later, it belongs to the original order.
+    reused = _payment("pay_fail", "order_A", "captured")
+    assert _report_recovery(recovery_ready, reused, "order_R1").status_code == 400
+
+
+def test_failure_payment_from_another_session_is_rejected(recovery_ready):
+    _create_order(recovery_ready, "order_B")
+    assert _report_failure(recovery_ready, FAILED_ON_A, order_id="order_B").status_code == 400
+
+
 # ---- races -------------------------------------------------------------------
 
 def test_two_simultaneous_recovery_reports_record_only_one(recovery_ready, isolated_state_db):
