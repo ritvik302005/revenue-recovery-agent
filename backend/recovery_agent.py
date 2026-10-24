@@ -39,6 +39,9 @@ RECOVERY_PROBABILITY = {
     (FailureReason.INVALID_CVV, RecoveryAction.RETRY_SAME_METHOD): 0.35,
     (FailureReason.ISSUER_UNAVAILABLE, RecoveryAction.RETRY_WITH_DELAY): 0.45,
     (FailureReason.LIMIT_EXCEEDED, RecoveryAction.SUGGEST_ALTERNATE_METHOD): 0.50,
+    (FailureReason.INVALID_CARD_DETAILS, RecoveryAction.RETRY_SAME_METHOD): 0.50,
+    (FailureReason.AUTHENTICATION_FAILED, RecoveryAction.RETRY_SAME_METHOD): 0.55,
+    (FailureReason.PAYMENT_CANCELLED, RecoveryAction.SEND_REMINDER_LINK): 0.35,
 }
 
 

@@ -25,30 +25,48 @@ METHODS = ["card", "upi", "netbanking", "wallet"]
 FIRST_NAMES = ["Aarav", "Priya", "Rohan", "Ananya", "Vikram", "Sneha", "Karan",
                "Isha", "Arjun", "Meera", "Rahul", "Divya", "Aditya", "Pooja"]
 
+# ILLUSTRATIVE mix of failure categories (relative weights, not measured
+# from real traffic). UNKNOWN is never generated: the batch only uses
+# documented Razorpay reasons.
 FAILURE_WEIGHTS = {
-    FailureReason.CARD_DECLINED: 0.22,
-    FailureReason.INSUFFICIENT_FUNDS: 0.18,
-    FailureReason.BANK_TIMEOUT: 0.15,
-    FailureReason.NETWORK_ERROR: 0.13,
-    FailureReason.EXPIRED_CARD: 0.10,
-    FailureReason.INVALID_CVV: 0.08,
-    FailureReason.ISSUER_UNAVAILABLE: 0.07,
-    FailureReason.LIMIT_EXCEEDED: 0.05,
+    FailureReason.CARD_DECLINED: 0.20,
+    FailureReason.INSUFFICIENT_FUNDS: 0.16,
+    FailureReason.BANK_TIMEOUT: 0.13,
+    FailureReason.NETWORK_ERROR: 0.11,
+    FailureReason.EXPIRED_CARD: 0.08,
+    FailureReason.INVALID_CVV: 0.06,
+    FailureReason.INVALID_CARD_DETAILS: 0.04,
+    FailureReason.AUTHENTICATION_FAILED: 0.05,
+    FailureReason.PAYMENT_CANCELLED: 0.05,
+    FailureReason.ISSUER_UNAVAILABLE: 0.06,
+    FailureReason.LIMIT_EXCEEDED: 0.04,
     FailureReason.FRAUD_SUSPECTED: 0.02,
 }
 
 
+def _batch_reasons(rng: random.Random, n: int) -> list[FailureReason]:
+    """Failure reasons for a batch of n. When n allows it, every category
+    appears at least once (so the fraud gate and each policy are always
+    exercised); the rest follow FAILURE_WEIGHTS. Shuffled with the seed."""
+    categories = list(FAILURE_WEIGHTS.keys())
+    weights = list(FAILURE_WEIGHTS.values())
+    if n < len(categories):
+        return rng.choices(categories, weights=weights, k=n)
+    reasons = categories + rng.choices(categories, weights=weights, k=n - len(categories))
+    rng.shuffle(reasons)
+    return reasons
+
+
 def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) -> list[PaymentRecord]:
     rng = random.Random(seed)
-    reasons = list(FAILURE_WEIGHTS.keys())
-    weights = list(FAILURE_WEIGHTS.values())
+    reasons = _batch_reasons(rng, n)
 
     batch = []
     live_order_failures = 0
 
     for i in range(n):
         name = rng.choice(FIRST_NAMES).lower()
-        reason = rng.choices(reasons, weights=weights, k=1)[0]
+        reason = reasons[i]
         method = rng.choice(METHODS)
         amount = rng.choice([49900, 99900, 149900, 249900, 499900, 999900])  # paise
         # Ids come from the seeded generator too: the simulated outcome is

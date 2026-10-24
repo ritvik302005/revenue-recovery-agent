@@ -45,7 +45,7 @@ Click a row with several steps (one that escalated): classify → select action 
 
 ## 5. The fraud safety gate (30 s)
 
-A payment Razorpay declines on a risk check (`payment_risk_check_failed`) is held: no retry, no customer contact. In the batch, fraud cases are rare (about 2%); the default seed of 60 currently has none, so use a batch of 100 or more to show one (fixing this is task P4-3). Otherwise show `safety_check()` in `backend/recovery_agent.py`.
+A payment Razorpay declines on a risk check (`payment_risk_check_failed`) is held: no retry, no customer contact. Every batch of 12 or more contains at least one such case, so find the row whose outcome is **held no action** and open its audit trail. Also show a row that ended **still failed**: the safety gate stopped it after three attempts.
 
 ## 6. Close (30 s)
 
