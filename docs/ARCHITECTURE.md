@@ -43,6 +43,7 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | POST | `/api/batch/run?n&try_live_orders` | API key if set | 10/min/IP | yes, up to n orders | n ≤ 500; synchronous |
 | GET | `/api/batch/results` | – | – | no | Last batch from storage |
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
+| GET | `/api/showcase/case` | – | – | no | One real recorded case for the landing page: latest live-demo result (`kind: live_demo`), else a batch record (`kind: batch_record`, labelled synthetic failure + simulated outcome), else `{"kind": "none"}` |
 | GET | `/api/live-demo/config` | – | – | no | Returns public `key_id` |
 | POST | `/api/live-demo/create-order` | API key if set | 10/min/IP | yes | ₹1–₹1,000, receipt generated server-side |
 | POST | `/api/live-demo/report-failure?order_id&payment_id` | API key if set | **none** | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; payment status must be `failed` (`created`/`authorized` → 409 not final; anything else → 400) |
@@ -104,7 +105,7 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 ## 7. Storage
 
-- Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600).
+- Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600), `showcase:latest_live_case` (no expiry; snapshot written when a session reaches `recovered`, `recovery_failed` or `held`).
 - SQLite file `backend/state.db` by default; Redis when `REDIS_URL` is set (untested).
 - Atomic operation (P1-2): `update_atomic(key, fn, ttl)`. SQLite uses `BEGIN IMMEDIATE`; Redis uses `WATCH`/`MULTI` with retry. `fn` may raise to abort without writing.
 - No used-payment registry: binding each recovery order to one session (P1-1) plus Razorpay's one-payment-one-order rule already prevents reuse (P1-3, tested).
@@ -126,6 +127,7 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 - Routing by hand in `App.jsx` (`/`, `/demo`, `/dashboard`, History API). No server rewrite yet → refresh 404 on static hosts (P5-13).
 - Views: `Landing.jsx` (+ visual components), `LiveDemo.jsx`, `Dashboard.jsx` (+ `MetricsSection`, `ResultsTable`).
+- Landing case (P3-2): `hooks/useShowcaseCase.js` fetches `/api/showcase/case` (and again when the tab becomes visible); `RecordedCaseCard.jsx` (hero) and `AuditTrailVisual.jsx` render it, with loading / error / empty states. `src/api.js` holds `API_BASE` (Dashboard and LiveDemo still define their own until P5-4).
 - `RevenueNetworkBackground.jsx`: full-screen canvas on every view.
 - API base duplicated in `LiveDemo.jsx` and `Dashboard.jsx`; no shared fetch helper yet (P5-4).
 

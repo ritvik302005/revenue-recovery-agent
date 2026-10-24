@@ -1,31 +1,58 @@
 import { useEffect, useState } from 'react'
+import { humanize, parseTimestamp } from '../hooks/useShowcaseCase.js'
 
-const EVENTS = [
-  { time: '+0s', label: 'Payment failure received', detail: 'Gateway: bank timeout', tone: 'danger' },
-  { time: '+1s', label: 'Failure classified', detail: 'Temporary issuer / network issue', tone: 'gold' },
-  { time: '+2s', label: 'Recovery policy selected', detail: 'Retry same method after 15 min', tone: 'gold' },
-  { time: '+2s', label: 'Safety gate passed', detail: 'Attempt 1 of 3 · no fraud signal', tone: 'real' },
-  { time: '+3s', label: 'Recovery scheduled', detail: 'Awaiting verified payment status', tone: 'default' },
-]
+const TONES = { classify: 'danger', select_action: 'gold', replan: 'gold', safety_check: 'real', execute: 'default' }
 
-export default function AuditTrailVisual() {
+// The recorded case's real audit trail, with times relative to its first
+// entry. Rows reveal once; nothing loops or pretends to be live.
+export default function AuditTrailVisual({ showcase }) {
+  const { status, data } = showcase
+  const entries = status === 'ready' && data.kind !== 'none' ? data.audit_trail : []
   const [visibleCount, setVisibleCount] = useState(0)
+
   useEffect(() => {
-    const timer = setTimeout(() => setVisibleCount((count) => count >= EVENTS.length ? 0 : count + 1), visibleCount >= EVENTS.length ? 2600 : 700)
+    if (visibleCount >= entries.length) return
+    const timer = setTimeout(() => setVisibleCount((count) => count + 1), 450)
     return () => clearTimeout(timer)
-  }, [visibleCount])
+  }, [visibleCount, entries.length])
+
+  if (!entries.length) {
+    return (
+      <div className="audit-trail-visual audit-trail-ledger">
+        <div className="audit-trail-header"><span><i className="audit-trail-header-dot" />CASE LEDGER</span></div>
+        <p className="recovery-case-note">
+          {status === 'loading'
+            ? 'Loading the recorded audit trail…'
+            : 'No recorded case yet. Once a live demo (or batch run) completes, its full audit trail appears here.'}
+        </p>
+      </div>
+    )
+  }
+
+  const start = parseTimestamp(entries[0].timestamp).getTime()
+  const offset = (entry) => `+${Math.round((parseTimestamp(entry.timestamp).getTime() - start) / 1000)}s`
 
   return (
     <div className="audit-trail-visual audit-trail-ledger">
-      <div className="audit-trail-header"><span><i className="audit-trail-header-dot" />CASE LEDGER</span><small>CASE PAY_2C19</small></div>
-      <div className="audit-trail-decision"><span>Current decision</span><strong>Retry after 15 min</strong><em>Safety-approved</em></div>
+      <div className="audit-trail-header">
+        <span><i className="audit-trail-header-dot" />CASE LEDGER</span>
+        <small>CASE {data.payment_id}</small>
+      </div>
+      <div className="audit-trail-decision">
+        <span>Final outcome</span>
+        <strong>{humanize(data.outcome)}</strong>
+        <em>{data.outcome_is_simulated ? 'Simulated outcome' : 'Verified by Razorpay'}</em>
+      </div>
       <div className="audit-trail-list">
-        {EVENTS.map((event, index) => {
+        {entries.map((entry, index) => {
           const shown = index < visibleCount
-          return <div key={event.label} className={`audit-trail-row tone-${event.tone} ${shown ? 'audit-trail-row-shown' : ''} ${index === visibleCount - 1 ? 'audit-trail-row-current' : ''}`}>
-            <div className="audit-trail-time">{shown ? event.time : '+—s'}</div><div className="audit-trail-connector"><span className="audit-trail-dot" />{index < EVENTS.length - 1 && <span className="audit-trail-line" />}</div>
-            <div className="audit-trail-label"><strong>{event.label}</strong><small>{event.detail}</small></div>
-          </div>
+          return (
+            <div key={index} className={`audit-trail-row tone-${TONES[entry.step] || 'default'} ${shown ? 'audit-trail-row-shown' : ''} ${index === visibleCount - 1 ? 'audit-trail-row-current' : ''}`}>
+              <div className="audit-trail-time">{shown ? offset(entry) : '+—s'}</div>
+              <div className="audit-trail-connector"><span className="audit-trail-dot" />{index < entries.length - 1 && <span className="audit-trail-line" />}</div>
+              <div className="audit-trail-label"><strong>{humanize(entry.step)}</strong><small>{entry.detail}</small></div>
+            </div>
+          )
         })}
       </div>
     </div>

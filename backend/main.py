@@ -197,6 +197,79 @@ def _require_stage(record: Optional[dict], order_id: str, allowed: set) -> dict:
     return record
 
 
+# ---- Showcase case: one real recorded case for the landing page ----
+# The latest live-demo session that reached a result is kept here with no
+# expiry (sessions themselves expire). Nothing in it is invented: every
+# field comes from the session, i.e. from Razorpay and the agent's run.
+SHOWCASE_LIVE_KEY = "showcase:latest_live_case"
+
+
+def _record_showcase(order_id: str, record: dict) -> None:
+    result = record.get("result") or {}
+    audit_trail = record.get("audit_trail", [])
+    storage.set_value(SHOWCASE_LIVE_KEY, {
+        "kind": "live_demo",
+        "recorded_at": audit_trail[-1]["timestamp"] if audit_trail else None,
+        "order_id": order_id,
+        "payment_id": record.get("original_payment_id"),
+        "recovery_order_id": result.get("recovery_order_id"),
+        "recovery_payment_id": result.get("recovery_payment_id"),
+        "amount": record.get("amount"),
+        "failure_reason": record.get("failure_reason"),
+        "raw_error_code": record.get("raw_error_code"),
+        "action": record.get("recommended_action"),
+        "safety_check_passed": record.get("safety_check_passed"),
+        "stage": record.get("stage"),
+        "outcome": result.get("recovery_outcome") or (Outcome.HELD_NO_ACTION.value
+                                                      if record.get("stage") == LiveDemoStage.HELD.value else None),
+        "attempts": record.get("recovery_attempts", 0),
+        "amount_recovered": result.get("amount_recovered", 0),
+        "outcome_is_simulated": False,
+        "failure_is_synthetic": False,
+        "audit_trail": audit_trail,
+    })
+
+
+def _batch_showcase(results: list) -> dict:
+    """A real record from the last batch run: synthetic failure, simulated
+    outcome, labelled as such. Prefers one where the agent escalated, as it
+    shows the most of the workflow."""
+    r = next((r for r in results if any(e.step == "replan" for e in r.audit_trail)), results[0])
+    audit_trail = [e.model_dump(mode="json") for e in r.audit_trail]
+    return {
+        "kind": "batch_record",
+        "recorded_at": audit_trail[-1]["timestamp"] if audit_trail else None,
+        "order_id": r.razorpay_order_id or r.order_id,
+        "payment_id": r.payment_id,
+        "razorpay_source": r.razorpay_source.value,
+        "amount": r.amount,
+        "failure_reason": r.failure_reason.value,
+        "raw_error_code": r.raw_error_code,
+        "action": r.action_taken.value,
+        "safety_check_passed": not any(e.step == "safety_check" and "BLOCKED" in e.detail for e in r.audit_trail),
+        "outcome": r.outcome.value,
+        "attempts": r.attempt_count,
+        "amount_recovered": r.amount_recovered,
+        "outcome_is_simulated": True,
+        "failure_is_synthetic": True,
+        "audit_trail": audit_trail,
+    }
+
+
+@app.get("/api/showcase/case")
+def showcase_case():
+    """One real recorded case for the landing page: the latest live-demo
+    result if there is one, otherwise a labelled batch record, otherwise
+    kind="none" (the page shows an empty state)."""
+    live = storage.get_value(SHOWCASE_LIVE_KEY)
+    if live:
+        return live
+    results = _load_last_results()
+    if results:
+        return _batch_showcase(results)
+    return {"kind": "none"}
+
+
 def _agent_state(failure_reason: FailureReason, attempt_count: int, payment_id: str, audit_trail: list) -> AgentState:
     """Minimal agent state for running single nodes (select_recovery_action,
     safety_check) on a live-demo payment instead of a batch PaymentRecord."""
@@ -332,7 +405,7 @@ def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
     state = safety_check(state)
 
     safety_passed = not state["done"]
-    _transition(order_id, {LiveDemoStage.ORDER_CREATED}, lambda record: {
+    stored = _transition(order_id, {LiveDemoStage.ORDER_CREATED}, lambda record: {
         "original_payment_id": payment_id,
         "failure_reason": failure_reason,
         "raw_error_code": raw_error_code,
@@ -341,6 +414,8 @@ def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
         "stage": (LiveDemoStage.FAILURE_RECORDED if safety_passed else LiveDemoStage.HELD).value,
         "audit_trail": [e.model_dump(mode="json") for e in state["audit_trail"]],
     })
+    if not safety_passed:
+        _record_showcase(order_id, stored)   # held by the safety gate: a finished case
 
     return {
         "failure_reason": failure_reason.value,
@@ -370,10 +445,11 @@ def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
                                      record["original_payment_id"], []))
     if gate["done"]:
         blocked = gate["audit_trail"][-1].model_dump(mode="json")
-        _transition(order_id, retryable, lambda record: {
+        stored = _transition(order_id, retryable, lambda record: {
             "stage": LiveDemoStage.HELD.value,
             "audit_trail": record.get("audit_trail", []) + [blocked],
         })
+        _record_showcase(order_id, stored)
         raise HTTPException(
             status_code=409,
             detail=f"Safety gate blocked another recovery attempt: {attempts} of {MAX_ATTEMPTS} attempts used.",
@@ -498,6 +574,7 @@ def report_recovery(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
         }
 
     stored = _transition(order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED}, record_outcome)
+    _record_showcase(order_id, stored)
     return {**stored["result"], "stage": stored["stage"],
             "recovery_attempts": stored["recovery_attempts"], "max_attempts": MAX_ATTEMPTS}
 

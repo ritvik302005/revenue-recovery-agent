@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { useReveal } from '../hooks/useReveal.js'
-import HeroTransactionVisual from './HeroTransactionVisual.jsx'
-import RecoveryEventCard from './RecoveryEventCard.jsx'
+import { useShowcaseCase } from '../hooks/useShowcaseCase.js'
+import RecordedCaseCard from './RecordedCaseCard.jsx'
 import AgentJourney from './AgentJourney.jsx'
 import HeadlineMetrics from './HeadlineMetrics.jsx'
 import AuditTrailVisual from './AuditTrailVisual.jsx'
-import AgentActivityFeed from './AgentActivityFeed.jsx'
 
 function RevealSection({ children, className = '', delay = 0 }) {
   const [ref, visible] = useReveal()
@@ -29,6 +28,7 @@ const NAV_LINKS = [
 
 export default function Landing({ onEnterDemo, onEnterDashboard }) {
   const [activeSection, setActiveSection] = useState('overview')
+  const showcase = useShowcaseCase()
 
   function scrollTo(id) {
     setActiveSection(id)
@@ -93,14 +93,10 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
             </div>
           </RevealSection>
 
-          <RevealSection delay={120}>
-            <AgentActivityFeed />
-          </RevealSection>
         </div>
 
         <RevealSection delay={40} className="landing-hero-visual-wrap">
-          <HeroTransactionVisual />
-          <RecoveryEventCard />
+          <RecordedCaseCard showcase={showcase} onEnterDemo={onEnterDemo} />
         </RevealSection>
       </div>
 
@@ -171,7 +167,7 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
           </p>
         </RevealSection>
         <RevealSection delay={40}>
-          <AuditTrailVisual />
+          <AuditTrailVisual showcase={showcase} />
         </RevealSection>
       </div>
 

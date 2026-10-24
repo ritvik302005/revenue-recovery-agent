@@ -10,7 +10,7 @@ The visual and interaction system: what exists today, the principles for changes
    - `--bg #17130f`, `--panel #1f1a15`, `--panel-border #332c22`
    - `--gold #d4a35a`, `--cream #f0e6d6`, `--text-dim #a89a86`
    - Semantic: `--real #4a9d7f` (green), `--simulated #c47f3a` (amber), `--danger #c05b4d`
-2. **Later violet layer** (from about line 1218): overrides with violet radial glows (`rgba(105,68,255,…)`), lavender text accents (`#d9c8ff`, `#bda0ff`), some `!important`.
+2. **Later violet layer** (from about line 1217): **redefines the `:root` tokens**: `--bg #030306`, `--gold #c5a5ff` (lavender, not gold), `--real #80e2c1`, `--simulated #bc9cff` (lavender, not amber), `--danger #ff8caf`. Adds violet radial glows (`rgba(105,68,255,…)`), lavender text accents (`#d9c8ff`, `#bda0ff`), some `!important`. So on screen today "simulated" is lavender and "real" is mint. Always use the tokens, never hardcode these colours.
 
 Type in use: **Instrument Serif** (display headings), **Inter** (body), **DM Mono** (labels, IDs, code), loaded from Google Fonts.
 
