@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useReveal } from '../hooks/useReveal.js'
 import { useShowcaseCase } from '../hooks/useShowcaseCase.js'
+import { useHealth } from '../hooks/useHealth.js'
 import RecordedCaseCard from './RecordedCaseCard.jsx'
 import AgentJourney from './AgentJourney.jsx'
 import HeadlineMetrics from './HeadlineMetrics.jsx'
@@ -29,6 +30,13 @@ const NAV_LINKS = [
 export default function Landing({ onEnterDemo, onEnterDashboard }) {
   const [activeSection, setActiveSection] = useState('overview')
   const showcase = useShowcaseCase()
+  const health = useHealth()
+  // The chip says only what /api/health actually knows (keys present or not).
+  const keyChip =
+    health.status === 'loading' ? { cls: 'chip-simulated', text: 'Checking backend…' }
+    : health.status === 'error' ? { cls: 'chip-danger', text: 'Backend unreachable' }
+    : health.data.razorpay_keys_configured ? { cls: 'chip-real', text: 'Razorpay Test Mode keys configured' }
+    : { cls: 'chip-danger', text: 'Razorpay keys not configured: live demo unavailable' }
 
   function scrollTo(id) {
     setActiveSection(id)
@@ -84,8 +92,8 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
 
           <RevealSection delay={80}>
             <div className="landing-provenance">
-              <span className="provenance-chip chip-real" style={{ margin: 0 }}>
-                ● Razorpay TEST MODE • Connected
+              <span className={`provenance-chip ${keyChip.cls}`} style={{ margin: 0 }} role="status">
+                ● {keyChip.text}
               </span>
               <span className="provenance-chip chip-simulated" style={{ margin: 0 }}>
                 ● Simulated outcomes always clearly labeled

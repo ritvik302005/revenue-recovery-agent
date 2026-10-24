@@ -90,6 +90,11 @@ body {
   border-color: var(--simulated);
   color: var(--simulated);
 }
+.chip-danger {
+  background: rgba(192, 91, 77, 0.12);
+  border-color: var(--danger);
+  color: var(--danger);
+}
 
 .section {
   background: var(--panel);
