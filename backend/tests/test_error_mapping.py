@@ -1,0 +1,105 @@
+"""
+Razorpay's documented error_reason values map to the right category, one
+table serves both the live demo and the batch, and anything undocumented
+is escalated instead of being guessed as "card declined".
+"""
+from unittest.mock import patch
+
+import pytest
+
+from models import FailureReason, RecoveryAction
+
+
+# The error reasons Razorpay's test cards produce
+# (https://razorpay.com/docs/payments/payments/test-card-details/).
+@pytest.mark.parametrize("error_reason, category", [
+    ("payment_timed_out", FailureReason.BANK_TIMEOUT),
+    ("insufficient_fund", FailureReason.INSUFFICIENT_FUNDS),      # test-card page spelling
+    ("insufficient_funds", FailureReason.INSUFFICIENT_FUNDS),     # error-list spelling
+    ("payment_cancelled", FailureReason.PAYMENT_CANCELLED),
+    ("card_declined", FailureReason.CARD_DECLINED),
+    ("card_disabled_for_online_payments", FailureReason.CARD_DECLINED),
+    ("card_number_invalid", FailureReason.INVALID_CARD_DETAILS),
+    ("gateway_technical_error", FailureReason.NETWORK_ERROR),
+    ("authentication_failed", FailureReason.AUTHENTICATION_FAILED),
+    # and a few from the error list
+    ("card_expired", FailureReason.EXPIRED_CARD),
+    ("incorrect_cvv", FailureReason.INVALID_CVV),
+    ("issuer_technical_error", FailureReason.ISSUER_UNAVAILABLE),
+    ("transaction_daily_limit_exceeded", FailureReason.LIMIT_EXCEEDED),
+    ("payment_risk_check_failed", FailureReason.FRAUD_SUSPECTED),
+])
+def test_documented_reasons_map_to_their_category(error_reason, category):
+    from razorpay_client import classify_real_payment_error
+    got, raw = classify_real_payment_error({"error_reason": error_reason, "error_code": "BAD_REQUEST_ERROR"})
+    assert got == category
+    assert raw == f"BAD_REQUEST_ERROR / {error_reason}"
+
+
+@pytest.mark.parametrize("error_reason", [
+    "payment_failed",            # documented as "no specific error code" — unspecific
+    "something_razorpay_adds_later",
+    "",
+    None,
+])
+def test_unspecific_or_undocumented_reasons_are_unknown(error_reason):
+    from razorpay_client import classify_real_payment_error
+    got, raw = classify_real_payment_error({"error_reason": error_reason, "error_code": "GATEWAY_ERROR"})
+    assert got == FailureReason.UNKNOWN
+
+
+def test_mapping_is_case_insensitive():
+    from razorpay_client import classify_real_payment_error
+    assert classify_real_payment_error({"error_reason": "CARD_DECLINED"})[0] == FailureReason.CARD_DECLINED
+
+
+def test_batch_examples_use_the_same_table():
+    """Every category (except UNKNOWN) has a documented example for the
+    batch, and that example's reason maps back to the same category."""
+    from razorpay_client import DOCUMENTED_ERROR_EXAMPLES, ERROR_REASON_TO_CATEGORY
+    assert set(DOCUMENTED_ERROR_EXAMPLES) == set(FailureReason) - {FailureReason.UNKNOWN}
+    for category, example in DOCUMENTED_ERROR_EXAMPLES.items():
+        error_reason = example["raw_error_code"].split(" / ")[1]
+        assert ERROR_REASON_TO_CATEGORY[error_reason] == category
+
+
+@pytest.mark.parametrize("category", list(FailureReason))
+def test_every_category_has_an_agent_action(category):
+    from recovery_agent import select_recovery_action
+    from main import _agent_state
+    state = select_recovery_action(_agent_state(category, 0, "pay_x", []))
+    assert state["action"] is not None
+    if category == FailureReason.UNKNOWN:
+        assert state["action"] == RecoveryAction.ESCALATE_TO_SUPPORT
+
+
+# ---- through the live-demo endpoint -----------------------------------------
+
+def _report(client, error_reason):
+    with patch("main.create_real_order",
+               return_value={"id": "order_A", "amount": 1000, "currency": "INR", "status": "created"}):
+        client.post("/api/live-demo/create-order", json={"amount": 1000})
+    payment = {"id": "pay_f", "order_id": "order_A", "amount": 1000, "currency": "INR",
+               "status": "failed", "error_code": "BAD_REQUEST_ERROR", "error_reason": error_reason}
+    with patch("main.fetch_real_payment", return_value=payment):
+        return client.post("/api/live-demo/report-failure", params={"order_id": "order_A", "payment_id": "pay_f"})
+
+
+def test_live_insufficient_funds_gets_a_reminder_link(client):
+    body = _report(client, "insufficient_fund").json()
+    assert body["failure_reason"] == "insufficient_funds"
+    assert body["recommended_action"] == "send_reminder_link"
+    assert body["stage"] == "failure_recorded"
+
+
+def test_live_risk_check_failure_is_held_by_the_safety_gate(client):
+    body = _report(client, "payment_risk_check_failed").json()
+    assert body["failure_reason"] == "fraud_suspected"
+    assert body["safety_check_passed"] is False
+    assert body["stage"] == "held"
+
+
+def test_live_unknown_reason_escalates_to_support(client):
+    body = _report(client, "payment_failed").json()
+    assert body["failure_reason"] == "unknown"
+    assert body["recommended_action"] == "escalate_to_support"

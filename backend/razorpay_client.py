@@ -12,12 +12,11 @@ IMPORTANT — what is real vs simulated here:
     payment_id, e.g. after a live Checkout test-card flow, and
     extracts Razorpay's OWN error_code / error_description for that
     failure. This is real gateway data, not invented.
-  - The RAZORPAY_ERROR_TAXONOMY below is Razorpay's own documented
-    error catalogue (error codes + reasons from their public test
-    card docs) — used to tag batch-generated records with realistic,
-    correctly-labelled failure reasons when we are not driving a
-    browser checkout for every one of 50+ records. This is real
-    Razorpay taxonomy, just not a live API round-trip per record.
+  - ERROR_REASON_TO_CATEGORY below groups Razorpay's documented
+    error_reason values (sources linked there) into our categories;
+    the live demo maps real payments through it. Batch records are
+    labelled with DOCUMENTED_ERROR_EXAMPLES — documented codes, but
+    assigned synthetically, not returned by a real payment.
   - Nothing about whether a RETRY succeeds is ever real — Razorpay
     test mode cannot simulate "customer tries again and it works"
     headlessly. That stays in recovery_agent.py, clearly flagged
@@ -114,83 +113,148 @@ def verify_checkout_signature(order_id: str, payment_id: str, signature: Optiona
         return False
 
 
+# Razorpay's documented payment error reasons (the `error_reason` field on a
+# failed payment), grouped into our categories. One table for both paths:
+# the live demo maps real payments through it, and the batch draws its
+# synthetic error codes from DOCUMENTED_ERROR_EXAMPLES below.
+# Sources (checked 2026-10-25):
+#   https://razorpay.com/docs/errors/payments/list/
+#   https://razorpay.com/docs/payments/payments/test-card-details/
+ERROR_REASON_TO_CATEGORY: dict[str, FailureReason] = {
+    # Declined by the card network/issuer, or the card can't be used here
+    "card_declined": FailureReason.CARD_DECLINED,
+    "payment_declined": FailureReason.CARD_DECLINED,
+    "debit_declined": FailureReason.CARD_DECLINED,
+    "debit_instrument_blocked": FailureReason.CARD_DECLINED,
+    "debit_instrument_inactive": FailureReason.CARD_DECLINED,
+    "card_disabled_for_online_payments": FailureReason.CARD_DECLINED,
+    "card_not_enrolled": FailureReason.CARD_DECLINED,
+    "international_transaction_not_allowed": FailureReason.CARD_DECLINED,
+    # Balance
+    "insufficient_funds": FailureReason.INSUFFICIENT_FUNDS,
+    "insufficient_fund": FailureReason.INSUFFICIENT_FUNDS,   # spelling on the test-card page
+    "funds_blocked_by_mandate": FailureReason.INSUFFICIENT_FUNDS,
+    # Card details
+    "card_expired": FailureReason.EXPIRED_CARD,
+    "incorrect_cvv": FailureReason.INVALID_CVV,
+    "card_number_invalid": FailureReason.INVALID_CARD_DETAILS,
+    "incorrect_card_details": FailureReason.INVALID_CARD_DETAILS,
+    "incorrect_card_expiry_date": FailureReason.INVALID_CARD_DETAILS,
+    "incorrect_cardholder_name": FailureReason.INVALID_CARD_DETAILS,
+    "card_type_invalid": FailureReason.INVALID_CARD_DETAILS,
+    # Customer authentication (OTP / 3-D Secure / PIN)
+    "authentication_failed": FailureReason.AUTHENTICATION_FAILED,
+    "incorrect_otp": FailureReason.AUTHENTICATION_FAILED,
+    "otp_expired": FailureReason.AUTHENTICATION_FAILED,
+    "otp_attempts_exceeded": FailureReason.AUTHENTICATION_FAILED,
+    "incorrect_pin": FailureReason.AUTHENTICATION_FAILED,
+    "incorrect_atm_pin": FailureReason.AUTHENTICATION_FAILED,
+    "pin_attempts_exceeded": FailureReason.AUTHENTICATION_FAILED,
+    # Customer cancelled
+    "payment_cancelled": FailureReason.PAYMENT_CANCELLED,
+    # Ran out of time
+    "payment_timed_out": FailureReason.BANK_TIMEOUT,
+    "request_timed_out": FailureReason.BANK_TIMEOUT,
+    "payment_session_expired": FailureReason.BANK_TIMEOUT,
+    "payment_collect_request_expired": FailureReason.BANK_TIMEOUT,
+    # Gateway / network / Razorpay side
+    "gateway_technical_error": FailureReason.NETWORK_ERROR,
+    "invalid_response_from_gateway": FailureReason.NETWORK_ERROR,
+    "server_error": FailureReason.NETWORK_ERROR,
+    "payment_declined_due_to_high_traffic": FailureReason.NETWORK_ERROR,
+    "verification_failed": FailureReason.NETWORK_ERROR,
+    "psp_not_available": FailureReason.NETWORK_ERROR,
+    "psp_app_not_available": FailureReason.NETWORK_ERROR,
+    "upi_app_technical_error": FailureReason.NETWORK_ERROR,
+    # Issuing bank down
+    "issuer_technical_error": FailureReason.ISSUER_UNAVAILABLE,
+    "bank_technical_error": FailureReason.ISSUER_UNAVAILABLE,
+    "bank_not_available": FailureReason.ISSUER_UNAVAILABLE,
+    "bank_cutoff_in_progress": FailureReason.ISSUER_UNAVAILABLE,
+    # Limits
+    "transaction_limit_exceeded": FailureReason.LIMIT_EXCEEDED,
+    "transaction_daily_limit_exceeded": FailureReason.LIMIT_EXCEEDED,
+    "transaction_daily_count_exceeded": FailureReason.LIMIT_EXCEEDED,
+    "transaction_frequency_limit_exceeded": FailureReason.LIMIT_EXCEEDED,
+    "credit_limit_exceeded": FailureReason.LIMIT_EXCEEDED,
+    # Risk: Razorpay has no "fraud" reason; a failed risk check is the
+    # closest documented signal, and the safety gate treats it as a hold.
+    "payment_risk_check_failed": FailureReason.FRAUD_SUSPECTED,
+    # Deliberately NOT mapped: "payment_failed" is documented as "no specific
+    # error code received from the gateway", so it stays UNKNOWN like any
+    # undocumented reason.
+}
+
+
 def classify_real_payment_error(payment: dict) -> tuple:
     """
     Maps a REAL Razorpay payment object's error_reason (from
-    fetch_real_payment) to our internal FailureReason enum. This is
-    the live-demo counterpart to the offline RAZORPAY_ERROR_TAXONOMY
-    tagging used for batch records — here the error_reason string
-    comes directly from Razorpay's own response, not assigned by us.
+    fetch_real_payment) to our FailureReason via ERROR_REASON_TO_CATEGORY.
+    The error_reason string comes from Razorpay's own response, not from us.
+    Anything undocumented or unspecific becomes UNKNOWN, which the agent
+    escalates to support instead of guessing.
 
     Returns (FailureReason, raw_error_code_string).
     """
-    from models import FailureReason  # local import to avoid circularity at module load
-
-    error_reason = (payment.get("error_reason") or "").lower()
-    error_code = payment.get("error_code", "")
-    error_description = payment.get("error_description", "")
+    error_reason = (payment.get("error_reason") or "").strip().lower()
+    error_code = payment.get("error_code") or ""
     raw = f"{error_code} / {error_reason or 'unknown'}"
-
-    reason_map = {
-        "payment_declined": FailureReason.CARD_DECLINED,
-        "payment_failed": FailureReason.CARD_DECLINED,
-        "payment_timed_out": FailureReason.BANK_TIMEOUT,
-        "payment_cancelled": FailureReason.NETWORK_ERROR,
-        "payment_error": FailureReason.NETWORK_ERROR,
-        "server_error": FailureReason.ISSUER_UNAVAILABLE,
-    }
-    failure_reason = reason_map.get(error_reason, FailureReason.CARD_DECLINED)
-    return failure_reason, raw
+    return ERROR_REASON_TO_CATEGORY.get(error_reason, FailureReason.UNKNOWN), raw
 
 
-# Razorpay's own documented error taxonomy (from their public test-card /
-# error-code docs) — used to assign realistic, correctly-labelled failure
-# reasons across a generated batch. Source: razorpay.com/docs/payments/
-# payments/test-card-details and Cards Error Codes reference.
-RAZORPAY_ERROR_TAXONOMY: dict[FailureReason, dict] = {
+# One documented example per category, used to label synthetic batch
+# records. `raw_error_code` pairs a documented error_code with a documented
+# error_reason from the sources above; descriptions paraphrase Razorpay's.
+# UNKNOWN is never generated: the batch only draws documented reasons.
+DOCUMENTED_ERROR_EXAMPLES: dict[FailureReason, dict] = {
     FailureReason.CARD_DECLINED: {
         "raw_error_code": "BAD_REQUEST_ERROR / card_declined",
-        "description": "The card was declined by the issuing bank.",
+        "description": "The card has been declined.",
     },
     FailureReason.INSUFFICIENT_FUNDS: {
-        "raw_error_code": "GATEWAY_ERROR / insufficient_funds",
-        "description": "Your payment could not be completed due to insufficient funds.",
-    },
-    FailureReason.BANK_TIMEOUT: {
-        "raw_error_code": "GATEWAY_ERROR / payment_timed_out",
-        "description": "Your payment could not be completed due to a temporary issue. Try again later.",
-    },
-    FailureReason.NETWORK_ERROR: {
-        "raw_error_code": "SERVER_ERROR / gateway_error",
-        "description": "Payment failed due to a temporary network/gateway issue.",
+        "raw_error_code": "BAD_REQUEST_ERROR / insufficient_funds",
+        "description": "Insufficient balance; try another card or method.",
     },
     FailureReason.EXPIRED_CARD: {
         "raw_error_code": "BAD_REQUEST_ERROR / card_expired",
         "description": "The card has expired.",
     },
+    FailureReason.BANK_TIMEOUT: {
+        "raw_error_code": "BAD_REQUEST_ERROR / payment_timed_out",
+        "description": "The payment was not completed in time.",
+    },
+    FailureReason.NETWORK_ERROR: {
+        "raw_error_code": "GATEWAY_ERROR / gateway_technical_error",
+        "description": "Technical error at the payment gateway; retry later.",
+    },
     FailureReason.INVALID_CVV: {
-        "raw_error_code": "BAD_REQUEST_ERROR / invalid_cvv",
-        "description": "The CVV entered is invalid.",
+        "raw_error_code": "BAD_REQUEST_ERROR / incorrect_cvv",
+        "description": "The CVV entered was incorrect.",
+    },
+    FailureReason.INVALID_CARD_DETAILS: {
+        "raw_error_code": "BAD_REQUEST_ERROR / card_number_invalid",
+        "description": "The card number is invalid.",
+    },
+    FailureReason.AUTHENTICATION_FAILED: {
+        "raw_error_code": "GATEWAY_ERROR / authentication_failed",
+        "description": "3-D Secure / OTP authentication failed.",
+    },
+    FailureReason.PAYMENT_CANCELLED: {
+        "raw_error_code": "BAD_REQUEST_ERROR / payment_cancelled",
+        "description": "The customer cancelled the payment.",
     },
     FailureReason.ISSUER_UNAVAILABLE: {
-        "raw_error_code": "GATEWAY_ERROR / issuer_unavailable",
-        "description": "The card issuing bank's servers are currently down.",
+        "raw_error_code": "GATEWAY_ERROR / issuer_technical_error",
+        "description": "Technical error at the card issuer.",
     },
     FailureReason.LIMIT_EXCEEDED: {
-        "raw_error_code": "BAD_REQUEST_ERROR / limit_exceeded",
-        "description": "The transaction amount exceeds the card's limit.",
+        "raw_error_code": "BAD_REQUEST_ERROR / transaction_limit_exceeded",
+        "description": "The card's transaction limit was exceeded.",
     },
     FailureReason.FRAUD_SUSPECTED: {
-        "raw_error_code": "GATEWAY_ERROR / fraudulent_transaction_risk",
-        "description": "The payment was flagged as a suspected fraudulent transaction.",
+        "raw_error_code": "BAD_REQUEST_ERROR / payment_risk_check_failed",
+        "description": "Declined by risk checks.",
     },
 }
 
-# Razorpay's documented test-mode UPI IDs / card behavior for a LIVE demo
-# subset — real values from their public test-integration docs.
-LIVE_DEMO_TEST_INSTRUMENTS = {
-    "upi_failure": "failure@razorpay",
-    "upi_success": "success@razorpay",
-    "card_declined_visa": "4100 2800 0009 0000",   # -> payment_timed_out per Razorpay docs
-    "card_success_visa": "4111 1111 1111 1111",
-}
+

@@ -9,15 +9,21 @@ import uuid
 
 
 class FailureReason(str, Enum):
+    """Our failure categories. Razorpay's documented error_reason values
+    map onto these in razorpay_client.ERROR_REASON_TO_CATEGORY."""
     CARD_DECLINED = "card_declined"
     INSUFFICIENT_FUNDS = "insufficient_funds"
     EXPIRED_CARD = "expired_card"
     BANK_TIMEOUT = "bank_timeout"
     NETWORK_ERROR = "network_error"
     INVALID_CVV = "invalid_cvv"
-    FRAUD_SUSPECTED = "fraud_suspected"          # no-retry category
+    INVALID_CARD_DETAILS = "invalid_card_details"
+    AUTHENTICATION_FAILED = "authentication_failed"  # OTP / 3-D Secure / PIN
+    PAYMENT_CANCELLED = "payment_cancelled"          # customer cancelled
+    FRAUD_SUSPECTED = "fraud_suspected"          # no-retry category (Razorpay risk check failed)
     ISSUER_UNAVAILABLE = "issuer_unavailable"
     LIMIT_EXCEEDED = "limit_exceeded"
+    UNKNOWN = "unknown"                          # undocumented or unspecific reason: escalate, don't guess
 
 
 class RecoveryAction(str, Enum):

@@ -135,7 +135,12 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 - Frontend: Vercel, root `frontend`, `VITE_API_BASE` set, `vercel.json` SPA rewrite.
 - Never deploy with live Razorpay keys.
 
-## 11. Sources to record
+## 11. Error mapping and sources
 
-- Razorpay test cards / UPI IDs and their resulting `error_reason`: link here after P2-3.
-- Razorpay documented `error_reason` values used by the mapping: link here after P2-2.
+`razorpay_client.ERROR_REASON_TO_CATEGORY` maps Razorpay's documented `error_reason` values to our `FailureReason` categories; the live demo uses it, and the batch labels records with `DOCUMENTED_ERROR_EXAMPLES` (one documented code per category, assigned synthetically). Undocumented or unspecific reasons (incl. `payment_failed`) → `unknown` → escalate to support. Razorpay has no "fraud" reason; `payment_risk_check_failed` → `fraud_suspected` → safety-gate hold.
+
+Sources (checked 2026-10-25):
+- Payment error reasons: https://razorpay.com/docs/errors/payments/list/
+- Test cards and the error each produces: https://razorpay.com/docs/payments/payments/test-card-details/
+  - Error cards fail only if you choose **Failure** on the mock bank page. Any future expiry, any CVV; OTP of 4–10 digits succeeds, fewer than 4 fails.
+  - The page spells it `insufficient_fund`; the error list spells it `insufficient_funds`. Both are mapped.

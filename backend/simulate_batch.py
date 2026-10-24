@@ -10,14 +10,14 @@ For each record:
     running inside a sandboxed dev environment), falls back to a
     locally-generated order_id and marks razorpay_source accordingly
     so the UI/metrics never mislabel it as real.
-  - Failure reason + raw_error_code are always assigned from
-    Razorpay's own documented error taxonomy (razorpay_client.
-    RAZORPAY_ERROR_TAXONOMY), not invented codes.
+  - Failure reason + raw_error_code are assigned synthetically, from
+    documented Razorpay error codes (razorpay_client.
+    DOCUMENTED_ERROR_EXAMPLES), not invented ones.
 """
 import random
 import logging
 from models import PaymentRecord, FailureReason, RazorpaySource
-from razorpay_client import RAZORPAY_ERROR_TAXONOMY, create_real_order
+from razorpay_client import DOCUMENTED_ERROR_EXAMPLES, create_real_order
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) ->
                 live_order_failures += 1
                 logger.debug(f"Live order creation unavailable ({e}); using local order id.")
 
-        taxonomy_entry = RAZORPAY_ERROR_TAXONOMY[reason]
+        taxonomy_entry = DOCUMENTED_ERROR_EXAMPLES[reason]
 
         record = PaymentRecord(
             amount=amount,

@@ -80,7 +80,11 @@ def select_recovery_action(state: AgentState) -> AgentState:
         FailureReason.INVALID_CVV: RecoveryAction.RETRY_SAME_METHOD,
         FailureReason.ISSUER_UNAVAILABLE: RecoveryAction.RETRY_WITH_DELAY,
         FailureReason.LIMIT_EXCEEDED: RecoveryAction.SUGGEST_ALTERNATE_METHOD,
+        FailureReason.INVALID_CARD_DETAILS: RecoveryAction.RETRY_SAME_METHOD,     # re-enter details
+        FailureReason.AUTHENTICATION_FAILED: RecoveryAction.RETRY_SAME_METHOD,    # redo OTP / 3-D Secure
+        FailureReason.PAYMENT_CANCELLED: RecoveryAction.SEND_REMINDER_LINK,       # customer walked away
         FailureReason.FRAUD_SUSPECTED: RecoveryAction.NO_ACTION_FRAUD_HOLD,
+        FailureReason.UNKNOWN: RecoveryAction.ESCALATE_TO_SUPPORT,                # don't guess
     }
     action = mapping.get(reason, RecoveryAction.ESCALATE_TO_SUPPORT)
     state["action"] = action
