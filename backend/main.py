@@ -296,6 +296,19 @@ def report_failure(order_id: str = Query(...), payment_id: str = Query(...)):
     if payment.get("currency") != "INR":
         raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
 
+    # Only a payment Razorpay itself reports as failed starts a recovery.
+    status = payment.get("status")
+    if status in ("created", "authorized"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Payment {payment_id} is '{status}', not final yet. Report it once it has failed.",
+        )
+    if status != "failed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment {payment_id} is '{status}', not failed; only a failed payment starts a recovery.",
+        )
+
     failure_reason, raw_error_code = classify_real_payment_error(payment)
 
     audit_trail = [

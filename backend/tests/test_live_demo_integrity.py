@@ -228,6 +228,22 @@ def test_safety_gate_blocks_the_attempt_after_max_attempts(recovery_ready, isola
     assert _create_recovery(recovery_ready, "order_R9").status_code == 409
 
 
+# ---- P2-1: only a payment that actually failed starts a recovery ---------------
+
+@pytest.mark.parametrize("status, code", [
+    ("captured", 400),      # a successful payment is not a failure (audit bug B1)
+    ("refunded", 400),
+    ("created", 409),       # still in flight: not final yet
+    ("authorized", 409),
+])
+def test_report_failure_rejects_payments_that_did_not_fail(client, isolated_state_db, status, code):
+    _create_order(client)
+    r = _report_failure(client, _payment("pay_s", "order_A", status))
+    assert r.status_code == code
+    assert status in r.json()["detail"]
+    assert isolated_state_db._get_demo_record("order_A")["stage"] == "order_created"
+
+
 # ---- P1-5: Checkout signature on a successful recovery -------------------------
 
 @pytest.mark.parametrize("signature", [
