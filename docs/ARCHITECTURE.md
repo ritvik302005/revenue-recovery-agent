@@ -56,7 +56,7 @@ Frontend files (`frontend/src/`):
 | Method | Path | Auth | Rate limit | Calls Razorpay | Notes |
 |---|---|---|---|---|---|
 | GET | `/api/health` | – | – | no | `razorpay_live_connectivity` is a fixed `"unverified"` |
-| POST | `/api/batch/run?n&try_live_orders` | API key if set | 10/min/IP | yes, up to n orders | n ≤ 500; synchronous |
+| POST | `/api/batch/run?n&try_live_orders&seed` | API key if set | 10/min/IP | yes, up to n orders | n ≤ 500; synchronous; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
 | GET | `/api/batch/results` | – | – | no | Last batch from storage |
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
 | GET | `/api/showcase/case` | – | – | no | One real recorded case for the landing page: latest live-demo result (`kind: live_demo`), else a batch record (`kind: batch_record`, labelled synthetic failure + simulated outcome), else `{"kind": "none"}` |

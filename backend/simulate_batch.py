@@ -51,6 +51,10 @@ def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) ->
         reason = rng.choices(reasons, weights=weights, k=1)[0]
         method = rng.choice(METHODS)
         amount = rng.choice([49900, 99900, 149900, 249900, 499900, 999900])  # paise
+        # Ids come from the seeded generator too: the simulated outcome is
+        # seeded by payment_id, so the same seed reproduces the same batch.
+        payment_id = f"pay_{rng.getrandbits(56):014x}"
+        order_id = f"order_{rng.getrandbits(56):014x}"
 
         razorpay_order_id = None
         source = RazorpaySource.LOCAL_ORDER
@@ -67,6 +71,8 @@ def generate_batch(n: int = 60, seed: int = 42, try_live_orders: bool = True) ->
         taxonomy_entry = DOCUMENTED_ERROR_EXAMPLES[reason]
 
         record = PaymentRecord(
+            payment_id=payment_id,
+            order_id=order_id,
             amount=amount,
             razorpay_order_id=razorpay_order_id,
             razorpay_source=source,

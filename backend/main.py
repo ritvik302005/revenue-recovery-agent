@@ -81,12 +81,18 @@ def rate_limit(request: Request):
         raise HTTPException(status_code=429, detail="Too many requests — please slow down and try again shortly.")
     bucket.append(now)
 
-# In-memory store for the last batch run — fine for a hackathon demo.
+# The last batch run, persisted via storage (SQLite, or Redis if configured).
 BATCH_RESULTS_KEY = "batch:last_results"
+DEFAULT_BATCH_SEED = 42
 
 
-def _save_last_results(results: list) -> None:
-    storage.set_value(BATCH_RESULTS_KEY, {"items": [r.model_dump(mode="json") for r in results]})
+def _save_last_results(results: list, seed: int) -> None:
+    storage.set_value(BATCH_RESULTS_KEY, {"seed": seed, "items": [r.model_dump(mode="json") for r in results]})
+
+
+def _last_batch_seed() -> Optional[int]:
+    raw = storage.get_value(BATCH_RESULTS_KEY)
+    return raw.get("seed") if raw else None
 
 
 def _load_last_results() -> list:
@@ -113,17 +119,20 @@ def health():
 
 
 @app.post("/api/batch/run", dependencies=[Depends(require_api_key), Depends(rate_limit)])
-def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(True)):
-    batch = generate_batch(n=n, try_live_orders=try_live_orders)
+def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(True),
+              seed: int = Query(DEFAULT_BATCH_SEED, ge=0, le=2**31 - 1)):
+    """Same seed -> same synthetic batch and same simulated outcomes."""
+    batch = generate_batch(n=n, seed=seed, try_live_orders=try_live_orders)
     results = [run_recovery(p) for p in batch]
-    _save_last_results(results)
-    return {"count": len(results), "results": [r.model_dump() for r in results]}
+    _save_last_results(results, seed)
+    return {"count": len(results), "seed": seed, "results": [r.model_dump() for r in results]}
 
 
 @app.get("/api/batch/results")
 def get_results():
     results = _load_last_results()
-    return {"count": len(results), "results": [r.model_dump() for r in results]}
+    return {"count": len(results), "seed": _last_batch_seed() if results else None,
+            "results": [r.model_dump() for r in results]}
 
 
 @app.get("/api/batch/metrics")
@@ -166,6 +175,7 @@ def get_metrics():
             "note": "Recovery outcomes below are simulated — Razorpay test mode cannot "
                      "headlessly simulate a customer successfully retrying a payment.",
             "batch_size": total,
+            "seed": _last_batch_seed(),
             "recovered": len(recovered),
             "still_failed": len(still_failed),
             "pending_customer_action": len(pending),

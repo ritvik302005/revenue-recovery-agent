@@ -17,7 +17,9 @@ function describeRun(metrics) {
     : real === n
       ? `a real Razorpay test-mode order for each`
       : `${real} real Razorpay test-mode order${real !== 1 ? 's' : ''} and ${n - real} local order id${n - real !== 1 ? 's' : ''}`
-  return `Last run: ${n} synthetic failed payment${n !== 1 ? 's' : ''}, ${orders}. Recovery outcomes are simulated.`
+  const seed = metrics.simulated_recovery_summary.seed
+  return `Last run (seed ${seed}): ${n} synthetic failed payment${n !== 1 ? 's' : ''}, ${orders}. ` +
+    'Recovery outcomes are simulated; the same seed reproduces the same run.'
 }
 
 export default function Dashboard({ onBack }) {
@@ -26,13 +28,14 @@ export default function Dashboard({ onBack }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [batchSize, setBatchSize] = useState(60)
+  const [seed, setSeed] = useState(42)
 
   async function runBatch() {
     setLoading(true)
     setError(null)
     try {
       const runRes = await fetch(
-        `${API_BASE}/api/batch/run?n=${batchSize}&try_live_orders=true`,
+        `${API_BASE}/api/batch/run?n=${batchSize}&seed=${seed}&try_live_orders=true`,
         { method: 'POST' }
       )
       if (!runRes.ok) throw new Error(`Batch run failed: ${runRes.status}`)
@@ -62,17 +65,33 @@ export default function Dashboard({ onBack }) {
           <p className="subtitle">{describeRun(metrics)}</p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <input
-            type="number"
-            min={1}
-            max={200}
-            value={batchSize}
-            onChange={(e) => setBatchSize(Number(e.target.value))}
-            style={{
-              width: 70, padding: '10px 8px', borderRadius: 8,
-              border: '1px solid #332c22', background: '#1f1a15', color: '#f0e6d6'
-            }}
-          />
+          <label style={{ display: 'grid', gap: 4, fontSize: 11, color: 'var(--text-dim)' }}>
+            Batch size
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={batchSize}
+              onChange={(e) => setBatchSize(Number(e.target.value))}
+              style={{
+                width: 70, padding: '10px 8px', borderRadius: 8,
+                border: '1px solid #332c22', background: '#1f1a15', color: '#f0e6d6'
+              }}
+            />
+          </label>
+          <label style={{ display: 'grid', gap: 4, fontSize: 11, color: 'var(--text-dim)' }}>
+            Seed
+            <input
+              type="number"
+              min={0}
+              value={seed}
+              onChange={(e) => setSeed(Number(e.target.value))}
+              style={{
+                width: 80, padding: '10px 8px', borderRadius: 8,
+                border: '1px solid #332c22', background: '#1f1a15', color: '#f0e6d6'
+              }}
+            />
+          </label>
           <button className="run-btn" onClick={runBatch} disabled={loading}>
             {loading ? 'Running…' : 'Run Batch'}
           </button>

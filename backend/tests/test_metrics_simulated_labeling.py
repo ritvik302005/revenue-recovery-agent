@@ -79,7 +79,8 @@ def test_batch_saved_by_an_older_version_is_ignored_not_a_crash(client, isolated
         item["razorpay_source"] = "real_order_tagged_failure"
     isolated_state_db.storage.set_value("batch:last_results", stored)
 
-    assert client.get("/api/batch/results").json() == {"count": 0, "results": []}
+    body = client.get("/api/batch/results").json()
+    assert (body["count"], body["results"]) == (0, [])
     assert client.get("/api/batch/metrics").status_code == 404
     assert client.get("/api/showcase/case").json() == {"kind": "none"}
 
