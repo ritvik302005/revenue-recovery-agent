@@ -38,6 +38,6 @@ export const humanize = (value) => (value ? String(value).replace(/_/g, ' ') : '
 export const formatINR = (paise) =>
   `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-// Backend timestamps are UTC without a zone suffix.
+// Backend timestamps are UTC with a "Z"; records saved before P5-8 have no suffix.
 export const parseTimestamp = (value) =>
   new Date(/(Z|[+-]\d\d:?\d\d)$/.test(value) ? value : `${value}Z`)

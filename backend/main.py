@@ -144,14 +144,14 @@ def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(Fa
     batch = generate_batch(n=n, seed=seed, try_live_orders=try_live_orders)
     results = [run_recovery(p) for p in batch]
     _save_last_results(results, seed)
-    return {"count": len(results), "seed": seed, "results": [r.model_dump() for r in results]}
+    return {"count": len(results), "seed": seed, "results": [r.model_dump(mode="json") for r in results]}
 
 
 @app.get("/api/batch/results")
 def get_results():
     results = _load_last_results()
     return {"count": len(results), "seed": _last_batch_seed() if results else None,
-            "results": [r.model_dump() for r in results]}
+            "results": [r.model_dump(mode="json") for r in results]}
 
 
 @app.get("/api/batch/metrics")
@@ -479,7 +479,7 @@ def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
         "recommended_action": state["action"].value,
         "safety_check_passed": safety_passed,
         "stage": (LiveDemoStage.FAILURE_RECORDED if safety_passed else LiveDemoStage.HELD).value,
-        "audit_trail": [a.model_dump() for a in state["audit_trail"]],
+        "audit_trail": [a.model_dump(mode="json") for a in state["audit_trail"]],
     }
 
 

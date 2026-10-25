@@ -2,10 +2,15 @@
 Core data models for the AI Revenue Recovery agent.
 """
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 import uuid
+
+
+def _utcnow() -> datetime:
+    # Timezone-aware, so it serialises with a "Z" and can't be read as local time.
+    return datetime.now(timezone.utc)
 
 
 class FailureReason(str, Enum):
@@ -72,11 +77,11 @@ class PaymentRecord(BaseModel):
     failure_reason: FailureReason
     raw_error_code: Optional[str] = None   # Razorpay's actual error code string, when known
     attempt_count: int = 0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class AuditLogEntry(BaseModel):
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utcnow)
     payment_id: str
     step: str                      # e.g. "classify", "select_action", "safety_check", "execute"
     detail: str                    # human-readable reasoning
