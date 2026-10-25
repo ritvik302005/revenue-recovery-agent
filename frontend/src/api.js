@@ -1,3 +1,5 @@
+import { takeToken } from './turnstile.js'
+
 export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
 export class ApiError extends Error {
@@ -32,7 +34,8 @@ function getSessionToken(fresh = false) {
   if (fresh) sessionToken = null
   if (sessionToken) return Promise.resolve(sessionToken)
   if (!pendingSession) {
-    pendingSession = request('/api/session', { method: 'POST' })
+    pendingSession = takeToken()
+      .then((proof) => request('/api/session', { method: 'POST', body: proof ? { turnstile_token: proof } : undefined }))
       .then((data) => { sessionToken = data.token; return sessionToken })
       .finally(() => { pendingSession = null })
   }

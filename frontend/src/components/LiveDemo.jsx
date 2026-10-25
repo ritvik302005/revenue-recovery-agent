@@ -3,6 +3,7 @@ import { apiFetch } from '../api.js'
 import { formatINR, humanize } from '../hooks/useShowcaseCase.js'
 import { loadCheckoutScript, TEST_CARD_FAIL } from '../checkout.js'
 import SiteNav from './SiteNav.jsx'
+import HumanCheck from './HumanCheck.jsx'
 
 const STEP_NAMES = ['Create a real order', 'Fail a payment', 'Agent acts', 'Customer pays', 'Result']
 const POLL_MS = 2500
@@ -288,6 +289,7 @@ export default function LiveDemo({ navigate }) {
             A recovery counts only if Razorpay reports the payment captured.
           </p>
         </header>
+        <HumanCheck />
         {children}
       </main>
     </div>

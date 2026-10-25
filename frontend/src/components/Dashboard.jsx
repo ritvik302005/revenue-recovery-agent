@@ -3,6 +3,7 @@ import MetricsSection from './MetricsSection.jsx'
 import ResultsTable from './ResultsTable.jsx'
 import { apiFetch } from '../api.js'
 import SiteNav from './SiteNav.jsx'
+import HumanCheck from './HumanCheck.jsx'
 
 const MAX_BATCH_SIZE = 500        // backend: n ≤ 500
 const MAX_SEED = 2 ** 31 - 1      // backend: 0 ≤ seed ≤ 2^31 − 1
@@ -110,6 +111,8 @@ export default function Dashboard({ navigate }) {
             {loading ? 'Running…' : 'Run batch'}
           </button>
         </form>
+
+        <HumanCheck />
 
         {error && <div className="alert" role="alert">{error}</div>}
 

@@ -721,6 +721,9 @@ small { font-size: .78rem; }
 
 .request-status { display: flex; flex-wrap: wrap; gap: 8px; }
 
+/* Turnstile: empty unless Cloudflare asks the visitor to act */
+.human-check:not(:empty) { margin-top: 20px; }
+
 /* the demo outbox: what the customer received */
 .outbox-list { display: grid; gap: 12px; width: 100%; }
 .outbox-msg {

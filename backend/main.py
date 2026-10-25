@@ -42,6 +42,7 @@ import uuid
 import razorpay.errors
 import access
 import storage
+import turnstile
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +139,22 @@ def health():
     }
 
 
+class SessionRequest(BaseModel):
+    # Cloudflare Turnstile token; required only when TURNSTILE_SECRET_KEY is set.
+    turnstile_token: Optional[str] = Field(default=None, max_length=2048)
+
+
 @app.post("/api/session", dependencies=[limit_sessions])
-def create_session():
-    """A short-lived token for the endpoints below (X-Session-Token)."""
+def create_session(request: Request, req: Optional[SessionRequest] = None):
+    """A short-lived token for the endpoints below (X-Session-Token). Behind
+    a Turnstile bot check when it's configured."""
+    if turnstile.enabled():
+        try:
+            ok = turnstile.verify(req.turnstile_token if req else None, access.client_ip(request))
+        except turnstile.TurnstileUnavailable:
+            raise HTTPException(status_code=503, detail="Couldn't reach the bot check. Please try again in a moment.")
+        if not ok:
+            raise HTTPException(status_code=403, detail="Couldn't confirm you're human. Refresh the page and try again.")
     return access.issue_session()
 
 

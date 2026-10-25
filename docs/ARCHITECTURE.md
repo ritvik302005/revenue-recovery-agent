@@ -83,7 +83,7 @@ Out-of-order or repeated calls return **409**; unknown sessions **404**. Order a
 - **Ownership:** a live-demo session stores the creating token's hash; every later step from another token → **403**, before any Razorpay call.
 - **Order budgets:** each token may create `ORDERS_PER_SESSION` (10) real orders; the whole server `MAX_LIVE_ORDERS_PER_DAY` (200, key `cap:live_orders:<UTC date>`). Exhausted → **429** with no Razorpay call. A failed Razorpay call gives its slot back. Batches take up to 5 slots and run with however many they get.
 - **Rate limits:** fixed one-minute windows per client IP and scope (`session`, `orders`, `reports`, `batches`), counted with `update_atomic` in the shared store, so they hold across workers and restarts (Redis when configured). The client IP comes from `X-Forwarded-For` only when `TRUSTED_PROXY_HOPS` > 0, taking that many entries from the right (entries further left can be forged). Default 0 = the socket address.
-- **Not yet:** a bot check (Turnstile) in front of `POST /api/session`; deferred by the owner, slots in without other changes.
+- **Bot check (Cloudflare Turnstile):** when `TURNSTILE_SECRET_KEY` is set, `POST /api/session` needs `{"turnstile_token"}` that Cloudflare's siteverify accepts (single use, 5 min; optional `TURNSTILE_HOSTNAMES` allow-list); missing or rejected → 403, Cloudflare unreachable → 503 (fails closed). Frontend: `turnstile.js` + `<HumanCheck />` on the dashboard and live demo, `appearance: interaction-only` (invisible unless Cloudflare wants a click); `apiFetch` takes a token whenever it needs a new session. Off when the keys are unset (tests, local dev). Checked on localhost with real keys: an automated browser is shown the "Verify you are human" checkbox and gets no token.
 
 ## 4. Agent
 
@@ -164,7 +164,10 @@ create-order ──► order_created ──► operator's Checkout (failing test
 | `RECOVERY_DELAY_SECONDS` | backend env | Wait before a `retry_with_delay` request becomes payable (default 30, shortened for the demo) |
 | `RECOVERY_REQUEST_TTL_SECONDS` | backend env | How long a recovery request stays payable before it counts as unpaid (default 1800) |
 | `RAZORPAY_WEBHOOK_SECRET` | backend env | Secret of the test-mode webhook set in the Razorpay Dashboard (not the API secret); unset → the webhook endpoint returns 503 |
+| `TURNSTILE_SECRET_KEY` | backend env | Cloudflare Turnstile secret; set → sessions need a valid Turnstile token |
+| `TURNSTILE_HOSTNAMES` | backend env | Optional comma-separated hostnames the token must be solved on (e.g. the Vercel domain) |
 | `VITE_API_BASE` | frontend build env | Backend URL; default `http://localhost:8000` |
+| `VITE_TURNSTILE_SITE_KEY` | frontend build env | Turnstile site key (public); unset → no widget |
 
 ## 9. Frontend
 
