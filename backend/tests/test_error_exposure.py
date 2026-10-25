@@ -5,6 +5,7 @@ REDIS_URL credentials never reach a log line. Razorpay is mocked.
 """
 from unittest.mock import patch
 
+import pytest
 import razorpay.errors
 import requests
 
@@ -56,8 +57,22 @@ def test_fetch_payment_errors_are_mapped_too(client):
 def test_redis_url_is_redacted():
     import storage
     assert storage._redacted("rediss://default:s3cretPass@eu1-fancy-cat.upstash.io:6379/0") == \
-        "rediss://eu1-fancy-cat.upstash.io:6379/0"
+        "rediss://eu1-fancy-cat.upstash.io:6379"
     assert "s3cret" not in storage._redacted("redis://:s3cret@localhost")
+
+
+@pytest.mark.parametrize("value", [
+    # what happened in production: the whole redis-cli command pasted as REDIS_URL
+    "redis-cli --tls -u rediss://default:s3cretPass@eu1-fancy-cat.upstash.io:6379",
+    " rediss://default:s3cretPass@host.upstash.io:6379 extra",
+    "https://default:s3cretPass@host.upstash.io",
+    "default:s3cretPass@host.upstash.io:6379",
+    "rediss://default:s3cretPass@host.upstash.io:notaport",
+])
+def test_anything_but_a_clean_redis_url_is_never_echoed(value):
+    import storage
+    out = storage._redacted(value)
+    assert "s3cret" not in out and "default" not in out and "upstash" not in out
 
 
 def test_redis_failure_log_has_no_credentials(tmp_path, monkeypatch, capsys):

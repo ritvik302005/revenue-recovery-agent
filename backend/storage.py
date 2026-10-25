@@ -37,21 +37,25 @@ LIVE_DEMO_TTL_SECONDS = int(os.environ.get("LIVE_DEMO_TTL_SECONDS", 3600))  # 1 
 DB_PATH = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "state.db"))
 
 def _redacted(url: str) -> str:
-    """The URL without its user:password part, safe to log."""
+    """Only the scheme, host and port: safe to log. Anything that isn't a
+    clean redis:// or rediss:// URL (e.g. a pasted `redis-cli ... -u <url>`
+    command) is never echoed, because it may contain the password."""
+    value = url.strip()
     try:
-        parts = urlsplit(url)
-        host = parts.hostname or "?"
-        port = f":{parts.port}" if parts.port else ""
-        return f"{parts.scheme}://{host}{port}{parts.path}"
+        parts = urlsplit(value)
+        port = parts.port
     except ValueError:
-        return "<unparseable REDIS_URL>"
+        return "<REDIS_URL is not a valid URL>"
+    if parts.scheme not in ("redis", "rediss") or not parts.hostname or any(c.isspace() for c in value):
+        return "<REDIS_URL is not a redis:// or rediss:// URL; paste only the URL>"
+    return f"{parts.scheme}://{parts.hostname}{f':{port}' if port else ''}"
 
 
 _redis_client = None
 if REDIS_URL:
     try:
         import redis  # optional dependency — only needed if REDIS_URL is set
-        _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        _redis_client = redis.from_url(REDIS_URL.strip(), decode_responses=True)
         _redis_client.ping()
         print(f"[storage] Connected to Redis at {_redacted(REDIS_URL)}.")
     except Exception as e:
