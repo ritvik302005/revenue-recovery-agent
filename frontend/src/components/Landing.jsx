@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useReveal } from '../hooks/useReveal.js'
-import { useShowcaseCase, parseTimestamp } from '../hooks/useShowcaseCase.js'
-import { useHealth } from '../hooks/useHealth.js'
+import { useShowcaseCase } from '../hooks/useShowcaseCase.js'
+import { useHealth, describeHealth } from '../hooks/useHealth.js'
 import RecordedCaseCard from './RecordedCaseCard.jsx'
 import AgentJourney from './AgentJourney.jsx'
 import HeadlineMetrics from './HeadlineMetrics.jsx'
@@ -26,31 +26,6 @@ const NAV_LINKS = [
   { id: 'dashboard', label: 'Evaluation', type: 'route' },
   { id: 'audit-trail', label: 'Audit Trail', type: 'scroll' },
 ]
-
-function timeAgo(iso) {
-  const minutes = Math.round((Date.now() - parseTimestamp(iso).getTime()) / 60000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes} min ago`
-  const hours = Math.round(minutes / 60)
-  return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`
-}
-
-// The chip says only what /api/health actually knows: key mode, and the
-// outcome of the latest real Razorpay call (health never probes Razorpay).
-function describeHealth(health) {
-  if (health.status === 'loading') return { cls: 'chip-simulated', text: 'Checking backend…' }
-  if (health.status === 'error') return { cls: 'chip-danger', text: 'Backend unreachable' }
-  const h = health.data
-  if (h.razorpay_key_mode === 'live') return { cls: 'chip-danger', text: 'Live Razorpay keys set: demo disabled (test mode only)' }
-  if (!h.razorpay_keys_configured) return { cls: 'chip-danger', text: 'Razorpay keys not configured: live demo unavailable' }
-  const ok = h.razorpay_last_success_at
-  const failed = h.razorpay_last_failure_at
-  if (failed && (!ok || parseTimestamp(failed) > parseTimestamp(ok))) {
-    return { cls: 'chip-simulated', text: `Razorpay Test Mode: last call failed ${timeAgo(failed)}` }
-  }
-  if (ok) return { cls: 'chip-real', text: `Razorpay Test Mode: last call succeeded ${timeAgo(ok)}` }
-  return { cls: 'chip-real', text: 'Razorpay Test Mode keys configured' }
-}
 
 export default function Landing({ onEnterDemo, onEnterDashboard }) {
   const [activeSection, setActiveSection] = useState('overview')
