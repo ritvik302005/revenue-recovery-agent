@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { apiFetch } from '../api.js'
 
 const CHECKOUT_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js'
@@ -23,6 +23,18 @@ function loadCheckoutScript() {
   })
 }
 
+function CheckoutStatus({ closed, busy, onReopen }) {
+  if (!closed) return <p style={{ color: '#a89a86' }}>Waiting for the Checkout attempt to complete…</p>
+  return (
+    <p style={{ color: '#a89a86' }}>
+      Checkout was closed before a payment finished.{' '}
+      <button className="run-btn" onClick={onReopen} disabled={busy} style={{ marginLeft: 8 }}>
+        Reopen Checkout
+      </button>
+    </p>
+  )
+}
+
 const STAGES = {
   IDLE: 'idle',
   ORDER_CREATED: 'order_created',
@@ -40,6 +52,9 @@ export default function LiveDemo({ onBack }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [checkoutClosed, setCheckoutClosed] = useState(false)
+  const [retry, setRetry] = useState(null)   // re-sends a report that failed (network, not final yet)
+  const rzpRef = useRef(null)
 
   useEffect(() => {
     apiFetch('/api/live-demo/config')
@@ -68,7 +83,16 @@ export default function LiveDemo({ onBack }) {
   }
 
   function openCheckout(orderData, mode) {
-    const card = mode === 'fail' ? TEST_CARD_FAIL : TEST_CARD_SUCCESS
+    // Set once Checkout has produced an outcome we act on, so closing the
+    // popup afterwards isn't mistaken for the user dismissing it.
+    let settled = false
+    const settle = () => {
+      settled = true
+      rzpRef.current?.close()
+    }
+    setCheckoutClosed(false)
+    setRetry(null)
+
     const options = {
       key: config.key_id,
       amount: orderData.amount,
@@ -84,9 +108,11 @@ export default function LiveDemo({ onBack }) {
       // user for security — we can't script the card fields directly.
       // We show the exact test card to type in the on-screen banner.
       handler: async function (response) {
+        settle()
         if (mode === 'fail') {
-          // Shouldn't normally reach here on a genuinely failing card —
-          // Checkout's own failure handler below covers that path.
+          // The payment went through, so there is no failure to recover.
+          setError('That payment succeeded, so there is no failure to recover. Start over and use the ' +
+            `failing test card (${TEST_CARD_FAIL.number}), then ${TEST_CARD_FAIL.bankPage} on the bank page.`)
         } else {
           // Checkout's signed success response: the backend verifies the
           // signature before it records a recovery.
@@ -96,12 +122,16 @@ export default function LiveDemo({ onBack }) {
       modal: {
         ondismiss: function () {
           setBusy(false)
+          if (!settled) setCheckoutClosed(true)
         },
       },
     }
 
     const rzp = new window.Razorpay(options)
+    rzpRef.current = rzp
     rzp.on('payment.failed', async function (response) {
+      // Close Checkout's own retry screen: the app takes it from here.
+      settle()
       const paymentId = response.error.metadata.payment_id
       if (mode === 'fail') {
         await handleFailure(orderData.id, paymentId)
@@ -125,6 +155,7 @@ export default function LiveDemo({ onBack }) {
       setStage(STAGES.FAILURE_RECORDED)
     } catch (e) {
       setError(e.message)
+      setRetry(() => () => handleFailure(orderId, paymentId))
     } finally {
       setBusy(false)
     }
@@ -164,12 +195,30 @@ export default function LiveDemo({ onBack }) {
       setStage(STAGES.DONE)
     } catch (e) {
       setError(e.message)
+      setRetry(() => () => handleRecoverySuccess(originalOrderId, recoveryOrderId, recoveryPaymentId, signature))
     } finally {
       setBusy(false)
     }
   }
 
+  function retryReport() {
+    const run = retry
+    setError(null)
+    setRetry(null)
+    run()
+  }
+
+  function reopenCheckout() {
+    setError(null)
+    if (stage === STAGES.ORDER_CREATED) openCheckout(order, 'fail')
+    else openCheckout(recoveryOrder, 'success')
+  }
+
   function reset() {
+    rzpRef.current?.close()
+    rzpRef.current = null
+    setCheckoutClosed(false)
+    setRetry(null)
     setStage(STAGES.IDLE)
     setOrder(null)
     setFailureInfo(null)
@@ -225,7 +274,14 @@ export default function LiveDemo({ onBack }) {
       </p>
 
       {error && (
-        <div style={{ color: '#c05b4d', marginBottom: 12 }}>{error}</div>
+        <div role="alert" style={{ color: '#c05b4d', marginBottom: 12 }}>
+          {error}
+          {retry && (
+            <button className="run-btn" onClick={retryReport} disabled={busy} style={{ marginLeft: 12 }}>
+              Try again
+            </button>
+          )}
+        </div>
       )}
 
       {stage === STAGES.IDLE && (
@@ -247,7 +303,7 @@ export default function LiveDemo({ onBack }) {
             <code>{TEST_CARD_FAIL.cvv}</code>
           </p>
           <p>On Razorpay's mock bank page, <strong>{TEST_CARD_FAIL.bankPage}</strong>.</p>
-          <p style={{ color: '#a89a86' }}>Waiting for the Checkout attempt to complete…</p>
+          <CheckoutStatus closed={checkoutClosed} busy={busy} onReopen={reopenCheckout} />
         </div>
       )}
 
@@ -270,6 +326,12 @@ export default function LiveDemo({ onBack }) {
         </div>
       )}
 
+      {[STAGES.ORDER_CREATED, STAGES.FAILURE_RECORDED, STAGES.RECOVERY_ORDER_CREATED].includes(stage) && (
+        <button className="back-link" onClick={reset} disabled={busy} style={{ marginTop: 12 }}>
+          Cancel and start over
+        </button>
+      )}
+
       {stage === STAGES.RECOVERY_ORDER_CREATED && (
         <div className="audit-panel">
           <p>
@@ -283,7 +345,7 @@ export default function LiveDemo({ onBack }) {
             <code>{TEST_CARD_SUCCESS.cvv}</code>
           </p>
           <p>On Razorpay's mock bank page, <strong>{TEST_CARD_SUCCESS.bankPage}</strong>.</p>
-          <p style={{ color: '#a89a86' }}>Waiting for the recovery Checkout attempt to complete…</p>
+          <CheckoutStatus closed={checkoutClosed} busy={busy} onReopen={reopenCheckout} />
         </div>
       )}
 

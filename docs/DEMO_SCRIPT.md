@@ -27,7 +27,7 @@ Click **Try Real Razorpay Demo**, then **Start Live Demo**.
 
 > "Nothing in this result is simulated. The browser can't pick a different order, replay the result, or claim success: the server checks all of it with Razorpay."
 
-If you choose Failure on the recovery attempt instead, the app offers another attempt, up to three. The fourth is blocked by the same safety gate the batch uses.
+If Checkout gets closed by mistake, click **Reopen Checkout**; **Cancel and start over** is there at every step. If you choose Failure on the recovery attempt instead, the app offers another attempt, up to three. The fourth is blocked by the same safety gate the batch uses.
 
 Back on the landing page, the **Recorded case** card and the audit trail now show this real case.
 
