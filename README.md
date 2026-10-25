@@ -4,8 +4,6 @@ Built for the Razorpay Buildathon (Track 3). When a Razorpay payment fails, the 
 
 The decisions are **rule-based**: a documented error mapping, an action table and a safety gate, orchestrated as a LangGraph graph. There is no ML model or LLM.
 
-> Work in progress: fixes are being made in order from `docs/TASKS.md`.
-
 ## What is real and what is simulated
 
 | | Live demo | Batch evaluation |
@@ -80,12 +78,8 @@ npm test
 
 | File | Contents |
 |---|---|
-| `docs/PRD.md` | Product requirements, goals, decisions |
-| `docs/ARCHITECTURE.md` | System design, endpoints, live-demo state machine, error mapping and sources |
-| `docs/RULES.md` | Rules for working on the project (honesty, payments, secrets, code) |
-| `docs/DESIGN.md` | Visual system and the motion / 3D direction |
-| `docs/TASKS.md` | The work plan and its status |
-| `docs/MEMORY.md` | Running context, decisions and the audit findings |
+| `docs/ARCHITECTURE.md` | System design, endpoints, the live-demo flow and state machine, access and limits, error mapping and sources |
+| `docs/DESIGN.md` | Visual system, motion, the CSS-3D printer, and the checklist review |
 | `docs/DEMO_SCRIPT.md` | Presentation walkthrough |
 | `docs/EVALUATION.md` | The 500-seed batch evaluation and how to reproduce it |
 

@@ -75,7 +75,7 @@ def get_client() -> razorpay.Client:
             "env vars before calling live Razorpay functions."
         )
     if key_mode() == "live":
-        # This project only ever moves test-mode money (RULES.md §2).
+        # This project only ever moves test-mode money.
         raise RazorpayNotConfigured("Live-mode Razorpay keys are configured; this app only runs with test-mode keys.")
     client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
     adapter = _TimeoutHTTPAdapter(timeout=DEFAULT_TIMEOUT)

@@ -1,8 +1,6 @@
 # ARCHITECTURE.md
 
-How the system is built **today** (verified by the audit of 2026-10-24) and the **target** after Phases 1–5. Update the "Current" sections as tasks land; when a target item is done, move it up.
-
-> This file is the authoritative architecture doc. The old root-level `ARCHITECTURE.md`, `PROJECT_STRUCTURE.md` and `EVALUATION_REPORT.md` were removed in P3-7 (they were partly wrong; still in git history). An evaluation doc with real numbers follows the multi-seed run (P4-4).
+How the system is built: components, endpoints, the live-demo flow, storage, configuration and deployment. Labels like P1-2 or B3 refer to the work items and audit findings each change came from (see the commit history). Evaluation results are in `EVALUATION.md`.
 
 ---
 

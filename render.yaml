@@ -1,0 +1,37 @@
+# Render Blueprint for the API (https://render.com/docs/blueprint-spec).
+# New -> Blueprint -> pick this repo. Render asks for every `sync: false`
+# value in its dashboard; secrets never live in the repo.
+services:
+  - type: web
+    name: revenue-recovery-agent-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      # Razorpay TEST MODE keys (rzp_test_...); live keys are refused.
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      # Upstash Redis URL (rediss://...). Without it state lives on a disk Render wipes on restart.
+      - key: REDIS_URL
+        sync: false
+      # Cloudflare Turnstile secret (the rotated one).
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      # Secret of the test-mode webhook added in the Razorpay Dashboard (can be added after the first deploy).
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      # The frontend's address (Vercel), used for CORS and the Turnstile hostname check.
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: TURNSTILE_HOSTNAMES
+        sync: false
+      # Render's proxy appends the client IP to X-Forwarded-For; verified after deploy.
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
