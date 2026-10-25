@@ -22,13 +22,20 @@ IMPORTANT — what is real vs simulated here:
     headlessly. That stays in recovery_agent.py, clearly flagged
     is_simulated=True.
 """
+import functools
+import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 import razorpay
+import razorpay.errors
 from requests.adapters import HTTPAdapter
 from dotenv import load_dotenv
 
+import storage
 from models import FailureReason, RazorpaySource
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()  # reads backend/.env if present
 
@@ -63,6 +70,9 @@ def get_client() -> razorpay.Client:
             "keys from Dashboard -> Settings -> API Keys and export them as "
             "env vars before calling live Razorpay functions."
         )
+    if key_mode() == "live":
+        # This project only ever moves test-mode money (RULES.md §2).
+        raise RazorpayNotConfigured("Live-mode Razorpay keys are configured; this app only runs with test-mode keys.")
     client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
     adapter = _TimeoutHTTPAdapter(timeout=DEFAULT_TIMEOUT)
     client.session.mount("https://", adapter)
@@ -70,6 +80,54 @@ def get_client() -> razorpay.Client:
     return client
 
 
+def key_mode() -> Optional[str]:
+    """'test' or 'live' from the key id's prefix (never the key itself); None if unset."""
+    if not RAZORPAY_KEY_ID:
+        return None
+    if RAZORPAY_KEY_ID.startswith("rzp_test_"):
+        return "test"
+    if RAZORPAY_KEY_ID.startswith("rzp_live_"):
+        return "live"
+    return "unknown"
+
+
+# The outcome of the latest real Razorpay calls, for /api/health. Recorded
+# by the calls themselves, so health never spends an API call to find out.
+HEALTH_KEY = "health:razorpay"
+
+
+def _record_call(error: Optional[Exception] = None) -> None:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if error is None:
+        update = {"last_success_at": now}
+    else:
+        # A BadRequestError means Razorpay answered and refused (bad id,
+        # wrong keys); anything else means it couldn't be reached or failed.
+        kind = "rejected" if isinstance(error, razorpay.errors.BadRequestError) else "unreachable_or_error"
+        update = {"last_failure_at": now, "last_failure_kind": kind}
+    try:
+        storage.update_atomic(HEALTH_KEY, lambda current: {**(current or {}), **update})
+    except Exception:
+        logger.warning("Could not record Razorpay call health", exc_info=True)
+
+
+def _tracked(fn):
+    """Record each real call's outcome; missing keys aren't a Razorpay outcome."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            result = fn(*args, **kwargs)
+        except RazorpayNotConfigured:
+            raise
+        except Exception as e:
+            _record_call(e)
+            raise
+        _record_call()
+        return result
+    return wrapper
+
+
+@_tracked
 def create_real_order(amount: int, currency: str = "INR", receipt: Optional[str] = None) -> dict:
     """
     Genuine call to POST /v1/orders. Returns Razorpay's real response
@@ -86,6 +144,7 @@ def create_real_order(amount: int, currency: str = "INR", receipt: Optional[str]
     return order
 
 
+@_tracked
 def fetch_real_payment(payment_id: str) -> dict:
     """
     Genuine call to GET /v1/payments/:id. Returns Razorpay's real

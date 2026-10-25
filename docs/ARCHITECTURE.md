@@ -57,14 +57,14 @@ Frontend files (`frontend/src/`):
 
 | Method | Path | Auth | Rate limit | Calls Razorpay | Notes |
 |---|---|---|---|---|---|
-| GET | `/api/health` | – | – | no | `razorpay_live_connectivity` is a fixed `"unverified"` |
+| GET | `/api/health` | – | – | no | `razorpay_keys_configured` (true only for test keys), `razorpay_key_mode` (`test` / `live` / `unknown` / null, from the prefix), `storage_backend`, and `razorpay_last_success_at` / `_last_failure_at` / `_last_failure_kind` (`rejected` or `unreachable_or_error`), recorded by every real Razorpay call (`razorpay_client._tracked`, key `health:razorpay`). Never probes Razorpay itself |
 | POST | `/api/session` | – | 10/min/IP | no | Issues `{token, expires_in, orders_per_session}`; send the token as `X-Session-Token` |
 | POST | `/api/batch/run?n&try_live_orders&seed` | session | 10/min/IP | only if `try_live_orders`: at most `MAX_LIVE_ORDERS_PER_BATCH` (5) orders, within the session and daily budget, stopping at the first failure | n ≤ 500; synchronous; `try_live_orders` defaults to false; with no budget left the batch still runs on local ids; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
 | GET | `/api/batch/results` | – | – | no | Last batch from storage |
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
 | GET | `/api/evaluation` | – | – | no | The committed multi-seed evaluation (`backend/evaluation/batch_eval.json`, made by `evaluate_batch.py`); 404 if not generated. The only source of headline recovery numbers |
 | GET | `/api/showcase/case` | – | – | no | One real recorded case for the landing page: latest live-demo result (`kind: live_demo`), else a batch record (`kind: batch_record`, labelled synthetic failure + simulated outcome), else `{"kind": "none"}` |
-| GET | `/api/live-demo/config` | – | – | no | Returns public `key_id` |
+| GET | `/api/live-demo/config` | – | – | no | Returns public `key_id`; `configured` is false for live-mode keys (`get_client` refuses `rzp_live_` keys) |
 | POST | `/api/live-demo/create-order` | session | 10/min/IP | yes (1 order from the budget; refunded if Razorpay fails) | ₹1–₹1,000, receipt generated server-side; the session record stores the token's owner id |
 | POST | `/api/live-demo/report-failure?order_id&payment_id` | session, owner | 30/min/IP | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; payment status must be `failed` (`created`/`authorized` → 409 not final; anything else → 400) |
 | POST | `/api/live-demo/create-recovery-order?order_id` | session, owner | 10/min/IP | yes (1 order from the budget) | Stage `failure_recorded` or `recovery_failed` → `recovery_order_created`; runs `safety_check` with `recovery_attempts` first (≥ 3 → stage `held`, 409, no order); server creates the order for the original amount and stores `current_recovery_order_id` |

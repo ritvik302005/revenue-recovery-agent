@@ -24,6 +24,7 @@ from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
     create_real_order, fetch_real_payment, classify_real_payment_error,
     verify_checkout_signature, RazorpayNotConfigured,
+    key_mode as razorpay_key_mode, HEALTH_KEY as RAZORPAY_HEALTH_KEY,
 )
 from pydantic import BaseModel, Field, ValidationError
 import logging
@@ -112,11 +113,18 @@ def _load_last_results() -> list:
 
 @app.get("/api/health")
 def health():
-    keys_present = bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+    """What the server actually knows. Razorpay reachability comes from the
+    latest real calls (recorded by razorpay_client), not from a probe."""
+    calls = storage.get_value(RAZORPAY_HEALTH_KEY) or {}
+    mode = razorpay_key_mode()
     return {
         "status": "ok",
-        "razorpay_keys_configured": keys_present,
-        "razorpay_live_connectivity": "unverified",  # flip only after verify_razorpay_connection.py succeeds
+        "razorpay_keys_configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET) and mode == "test",
+        "razorpay_key_mode": mode,
+        "storage_backend": storage.backend_name(),
+        "razorpay_last_success_at": calls.get("last_success_at"),
+        "razorpay_last_failure_at": calls.get("last_failure_at"),
+        "razorpay_last_failure_kind": calls.get("last_failure_kind"),
     }
 
 
@@ -366,7 +374,8 @@ def live_demo_config():
     this is Razorpay's standard Checkout pattern) to open Checkout."""
     return {
         "key_id": RAZORPAY_KEY_ID,
-        "configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
+        # Live keys count as not configured: the demo only runs in test mode.
+        "configured": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET) and razorpay_key_mode() == "test",
     }
 
 

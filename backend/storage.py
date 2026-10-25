@@ -28,6 +28,10 @@ import time
 from typing import Optional
 from urllib.parse import urlsplit
 
+from dotenv import load_dotenv
+
+load_dotenv()  # this module reads its settings at import, whoever imports it first
+
 REDIS_URL = os.environ.get("REDIS_URL")
 LIVE_DEMO_TTL_SECONDS = int(os.environ.get("LIVE_DEMO_TTL_SECONDS", 3600))  # 1 hour
 DB_PATH = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "state.db"))
@@ -119,6 +123,10 @@ def delete_value(key: str) -> None:
         return
     with _sqlite_conn() as conn:
         conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+
+
+def backend_name() -> str:
+    return "redis" if _redis_client else "sqlite"
 
 
 def purge_expired() -> None:
