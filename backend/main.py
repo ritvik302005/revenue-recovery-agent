@@ -10,6 +10,7 @@ Endpoints:
 from fastapi import FastAPI, Query, HTTPException, Header, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+import json
 import os
 import time
 from collections import defaultdict
@@ -216,6 +217,22 @@ def _require_stage(record: Optional[dict], order_id: str, allowed: set) -> dict:
                    f"{' or '.join(sorted(s.value for s in allowed))}.",
         )
     return record
+
+
+# ---- Multi-seed evaluation (P4-4): the only source of headline recovery numbers ----
+EVALUATION_PATH = os.environ.get(
+    "EVALUATION_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "evaluation", "batch_eval.json"))
+
+
+@app.get("/api/evaluation")
+def evaluation():
+    """The committed result of evaluate_batch.py: many seeded batch runs,
+    summarised with uncertainty. It is a simulation and says so."""
+    try:
+        with open(EVALUATION_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="No evaluation yet. Run `python evaluate_batch.py` in backend/.")
 
 
 # ---- Showcase case: one real recorded case for the landing page ----

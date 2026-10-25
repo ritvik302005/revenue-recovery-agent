@@ -1,0 +1,88 @@
+{
+  "kind": "simulated_batch_evaluation",
+  "note": "Simulation: synthetic failure reasons (documented Razorpay codes assigned by a generator) and outcomes from an illustrative probability table. Describes the agent's policy under those assumptions, not real recoveries.",
+  "generated_at": "2026-10-25T10:09:44+00:00",
+  "seeds": {
+    "first": 1,
+    "last": 500,
+    "count": 500
+  },
+  "batch_size": 60,
+  "payments_simulated": 30000,
+  "max_attempts": 3,
+  "recovery_rate_pct": {
+    "mean": 68.3,
+    "sd": 5.8,
+    "mean_ci95": [
+      67.8,
+      68.8
+    ],
+    "single_run_range95": [
+      56.7,
+      78.3
+    ],
+    "min": 51.7,
+    "max": 90.0
+  },
+  "value_recovered_pct_mean": 68.3,
+  "outcome_share_pct": {
+    "held_no_action": 3.3,
+    "pending_customer_action": 16.9,
+    "recovered": 68.3,
+    "still_failed": 11.5
+  },
+  "safety_gate": {
+    "fraud_holds": 980,
+    "max_attempt_stops": 3458
+  },
+  "by_category": {
+    "authentication_failed": {
+      "count": 1788,
+      "recovery_rate_pct": 73.9
+    },
+    "bank_timeout": {
+      "count": 3589,
+      "recovery_rate_pct": 80.1
+    },
+    "card_declined": {
+      "count": 5232,
+      "recovery_rate_pct": 75.3
+    },
+    "expired_card": {
+      "count": 2420,
+      "recovery_rate_pct": 77.0
+    },
+    "fraud_suspected": {
+      "count": 980,
+      "recovery_rate_pct": 0.0
+    },
+    "insufficient_funds": {
+      "count": 4351,
+      "recovery_rate_pct": 54.1
+    },
+    "invalid_card_details": {
+      "count": 1487,
+      "recovery_rate_pct": 71.6
+    },
+    "invalid_cvv": {
+      "count": 1945,
+      "recovery_rate_pct": 64.2
+    },
+    "issuer_unavailable": {
+      "count": 1869,
+      "recovery_rate_pct": 67.1
+    },
+    "limit_exceeded": {
+      "count": 1514,
+      "recovery_rate_pct": 71.3
+    },
+    "network_error": {
+      "count": 3140,
+      "recovery_rate_pct": 82.6
+    },
+    "payment_cancelled": {
+      "count": 1685,
+      "recovery_rate_pct": 52.5
+    }
+  }
+}

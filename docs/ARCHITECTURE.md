@@ -33,6 +33,7 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | `models.py` | Enums (`FailureReason`, `RecoveryAction`, `Outcome`, `RazorpaySource`, `LiveDemoStage` – unused), Pydantic models |
 | `storage.py` | `set_value` / `get_value` / `delete_value`, optional TTL |
 | `verify_razorpay_connection.py` | Creates one real ₹10 test order to check keys |
+| `evaluate_batch.py` | Multi-seed evaluation of the batch simulation (offline); writes `evaluation/batch_eval.json` |
 | `tests/` | Safety gate, metrics labelling, live-demo integrity (binding, stages, races, retries, signatures), error mapping and id validation, showcase case |
 
 Frontend files (`frontend/src/`):
@@ -59,6 +60,7 @@ Frontend files (`frontend/src/`):
 | POST | `/api/batch/run?n&try_live_orders&seed` | API key if set | 10/min/IP | yes, up to n orders | n ≤ 500; synchronous; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
 | GET | `/api/batch/results` | – | – | no | Last batch from storage |
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
+| GET | `/api/evaluation` | – | – | no | The committed multi-seed evaluation (`backend/evaluation/batch_eval.json`, made by `evaluate_batch.py`); 404 if not generated. The only source of headline recovery numbers |
 | GET | `/api/showcase/case` | – | – | no | One real recorded case for the landing page: latest live-demo result (`kind: live_demo`), else a batch record (`kind: batch_record`, labelled synthetic failure + simulated outcome), else `{"kind": "none"}` |
 | GET | `/api/live-demo/config` | – | – | no | Returns public `key_id` |
 | POST | `/api/live-demo/create-order` | API key if set | 10/min/IP | yes | ₹1–₹1,000, receipt generated server-side |
