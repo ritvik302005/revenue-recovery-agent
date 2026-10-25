@@ -28,11 +28,13 @@ function SectionHead({ id, title, children }) {
 const REAL_LINES = [
   ['Order', 'Created on Razorpay Test Mode by the server'],
   ['Failure', 'A real Checkout decline with its real error_reason'],
-  ['Recovery', 'Counts only if Razorpay reports the payment captured and the Checkout signature verifies'],
+  ['Action', 'Executed: a recovery link for the customer, or a support case'],
+  ['Recovery', 'Counts only if the customer’s payment is captured, confirmed by Checkout’s signature or a signed webhook'],
 ]
 const SIMULATED_LINES = [
   ['Order', 'A local id (real test orders are optional, first 5 only)'],
   ['Failure', 'A documented Razorpay code, assigned by a generator'],
+  ['Action', 'The same execution plan, recorded; nothing is sent'],
   ['Outcome', 'Drawn from an illustrative probability table'],
 ]
 
@@ -67,8 +69,9 @@ export default function Landing({ onEnterDemo, onEnterDashboard, navigate }) {
             <p className="lede">
               When a Razorpay payment fails, the agent reads the real error, picks a
               recovery action from a fixed policy, runs it past hard safety rules
-              (fraud holds and a three-attempt retry budget) and writes every
-              decision down. The rules are lookup tables, not a model; LangGraph runs the steps.
+              (fraud holds and a three-attempt retry budget), then carries it out:
+              a recovery link for the customer, or a support case. Every step is
+              written down. The rules are lookup tables, not a model.
             </p>
             <div className="cta-row">
               <button className="btn btn-paper" onClick={onEnterDemo}>Run the live demo</button>

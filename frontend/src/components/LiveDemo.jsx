@@ -1,30 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { apiFetch } from '../api.js'
+import { formatINR, humanize } from '../hooks/useShowcaseCase.js'
+import { loadCheckoutScript, TEST_CARD_FAIL } from '../checkout.js'
 import SiteNav from './SiteNav.jsx'
 
-const CHECKOUT_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js'
+const STEP_NAMES = ['Create a real order', 'Fail a payment', 'Agent acts', 'Customer pays', 'Result']
+const POLL_MS = 2500
 
-// Razorpay's documented test cards (checked 2026-10-25):
-// https://razorpay.com/docs/payments/payments/test-card-details/
-// Any future expiry and any CVV work. The error card only fails if
-// "Failure" is chosen on the mock bank page (it then returns
-// error_reason payment_timed_out); the domestic card succeeds with
-// "Success" or any 4–10 digit OTP.
-const TEST_CARD_FAIL = { number: '4100 2800 0009 0000', expiry: '12/30', cvv: '123', bankPage: 'choose Failure' }
-const TEST_CARD_SUCCESS = { number: '4100 2800 0000 1007', expiry: '12/30', cvv: '123', bankPage: 'choose Success (or enter any 4–10 digit OTP)' }
-
-function loadCheckoutScript() {
-  return new Promise((resolve, reject) => {
-    if (window.Razorpay) return resolve()
-    const script = document.createElement('script')
-    script.src = CHECKOUT_SCRIPT_SRC
-    script.onload = resolve
-    script.onerror = () => reject(new Error('Failed to load Razorpay Checkout script'))
-    document.body.appendChild(script)
-  })
-}
-
-const STEP_NAMES = ['Create a real order', 'Fail a payment', 'Attempt recovery', 'Result']
+const STAGES = { IDLE: 'idle', ORDER_CREATED: 'order_created', AGENT: 'agent' }
 
 function CheckoutStatus({ closed, busy, onReopen }) {
   if (!closed) return <p className="waiting">Waiting for the Checkout attempt to finish…</p>
@@ -50,21 +33,125 @@ function TestCard({ card }) {
   )
 }
 
-const STAGES = {
-  IDLE: 'idle',
-  ORDER_CREATED: 'order_created',
-  FAILURE_RECORDED: 'failure_recorded',
-  RECOVERY_ORDER_CREATED: 'recovery_order_created',
-  DONE: 'done',
+function useCountdown(seconds, key) {
+  const [left, setLeft] = useState(seconds)
+  useEffect(() => { setLeft(seconds) }, [seconds, key])
+  useEffect(() => {
+    if (left <= 0) return
+    const t = setTimeout(() => setLeft((s) => s - 1), 1000)
+    return () => clearTimeout(t)
+  }, [left])
+  return left
+}
+
+const REQUEST_STATUS = {
+  scheduled: 'Scheduled: the customer can pay once the delay passes',
+  open: 'Open: waiting for the customer',
+  paid: 'Paid',
+}
+
+function RequestStatus({ request }) {
+  const left = useCountdown(request.seconds_until_available, request.link)
+  const label = request.status === 'scheduled' && left > 0
+    ? `Scheduled: payable in ${left} s`
+    : REQUEST_STATUS[request.status] || humanize(request.status)
+  return (
+    <div className="request-status">
+      <span className={`badge ${request.status === 'scheduled' && left > 0 ? 'badge-plain' : 'badge-real'}`}>{label}</span>
+      {request.has_order && <span className="badge badge-plain">Customer has opened Checkout</span>}
+      {request.excluded_method && <span className="badge badge-plain">{humanize(request.excluded_method)} hidden</span>}
+    </div>
+  )
+}
+
+function AgentPanel({ view }) {
+  const recovered = view.stage === 'recovered'
+  const latest = [...view.outbox].reverse()
+  return (
+    <>
+      <section className="stage-panel">
+        <h2 className="stage-title tone-real">Real failure recorded from Razorpay</h2>
+        <dl className="facts">
+          <div><dt>Failure reason</dt><dd>{humanize(view.failure_reason)}</dd></div>
+          <div><dt>Razorpay error</dt><dd><code>{view.raw_error_code}</code></dd></div>
+          <div><dt>Paid with</dt><dd>{humanize(view.failed_method) || 'unknown'}</dd></div>
+          <div><dt>Agent's action</dt><dd>{humanize(view.recommended_action)}</dd></div>
+          <div><dt>Attempt</dt><dd>{view.recovery_attempts} of {view.max_attempts}</dd></div>
+        </dl>
+      </section>
+
+      {view.stage === 'awaiting_customer' && view.current_request && (
+        <section className="stage-panel">
+          <h2 className="stage-title">What the agent did</h2>
+          <RequestStatus request={view.current_request} />
+          <p className="waiting">This page updates when the customer pays.</p>
+        </section>
+      )}
+
+      {view.stage === 'escalated' && view.support_case && (
+        <section className="stage-panel">
+          <h2 className="stage-title">Escalated to support</h2>
+          <p>
+            Case <code>{view.support_case.id}</code> opened. The agent sends no payment request:
+            {' '}{view.support_case.note}
+          </p>
+        </section>
+      )}
+
+      {view.stage === 'held' && (
+        <section className="stage-panel">
+          <h2 className="stage-title tone-danger">Held by the safety gate</h2>
+          <p>{view.audit_trail[view.audit_trail.length - 1]?.detail}</p>
+        </section>
+      )}
+
+      {recovered && view.result && (
+        <section className="stage-panel result">
+          <div className="result-slip">
+            <h2 className="result-title">Recovered — verified by Razorpay Test Mode</h2>
+            <dl className="receipt-lines">
+              <div className="receipt-line"><dt>Amount recovered</dt><dd className="is-strong">{formatINR(view.result.amount_recovered)}</dd></div>
+              <div className="receipt-line"><dt>Recovery order</dt><dd className="is-id">{view.result.recovery_order_id}</dd></div>
+              <div className="receipt-line"><dt>Attempts</dt><dd>{view.recovery_attempts} of {view.max_attempts}</dd></div>
+            </dl>
+            <div className="stamp stamp-real" aria-hidden="true">Captured · verified</div>
+            <p className="receipt-foot">The customer paid through the agent's link; Razorpay reported it captured (outcome_is_simulated: false).</p>
+          </div>
+        </section>
+      )}
+
+      {latest.length > 0 && (
+        <section className="stage-panel outbox" aria-labelledby="outbox-title">
+          <h2 className="stage-title" id="outbox-title">Outbox</h2>
+          <p className="panel-note">What the customer received. In production this goes by SMS or email; in the demo it is shown here.</p>
+          <ol className="outbox-list">
+            {latest.map((m, i) => (
+              <li key={m.link} className={`outbox-msg ${i === 0 && view.stage === 'awaiting_customer' ? 'is-current' : ''}`}>
+                <div className="outbox-meta">
+                  <span>Attempt {m.attempt} · {humanize(m.action)}</span>
+                  <span>{new Date(m.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                </div>
+                {/* The server stores a path; a real message would carry the full URL. */}
+                <p className="outbox-text">{m.text.replace(m.link, window.location.origin + m.link)}</p>
+                {i === 0 && view.stage === 'awaiting_customer' && (
+                  <a className="btn btn-paper btn-sm" href={m.link} target="_blank" rel="noopener">
+                    Open as the customer ↗
+                  </a>
+                )}
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+    </>
+  )
 }
 
 export default function LiveDemo({ navigate }) {
   const [config, setConfig] = useState(null)
   const [stage, setStage] = useState(STAGES.IDLE)
   const [order, setOrder] = useState(null)
-  const [failureInfo, setFailureInfo] = useState(null)
-  const [recoveryOrder, setRecoveryOrder] = useState(null)
-  const [result, setResult] = useState(null)
+  const [view, setView] = useState(null)      // the server's session view once the failure is recorded
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const [checkoutClosed, setCheckoutClosed] = useState(false)
@@ -78,6 +165,19 @@ export default function LiveDemo({ navigate }) {
     loadCheckoutScript().catch((e) => setError(e.message))
   }, [])
 
+  // While the customer has the request, follow the session (they pay in another tab).
+  const awaitingCustomer = view?.stage === 'awaiting_customer'
+  useEffect(() => {
+    if (!awaitingCustomer || !order) return
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      apiFetch('/api/live-demo/session', { session: true, params: { order_id: order.id } })
+        .then(setView)
+        .catch(() => {})
+    }, POLL_MS)
+    return () => clearInterval(t)
+  }, [awaitingCustomer, order])
+
   async function startDemo() {
     setError(null)
     setBusy(true)
@@ -89,7 +189,7 @@ export default function LiveDemo({ navigate }) {
       })
       setOrder(orderData)
       setStage(STAGES.ORDER_CREATED)
-      openCheckout(orderData, 'fail')
+      openCheckout(orderData)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -97,7 +197,7 @@ export default function LiveDemo({ navigate }) {
     }
   }
 
-  function openCheckout(orderData, mode) {
+  function openCheckout(orderData) {
     // Set once Checkout has produced an outcome we act on, so closing the
     // popup afterwards isn't mistaken for the user dismissing it.
     let settled = false
@@ -108,31 +208,19 @@ export default function LiveDemo({ navigate }) {
     setCheckoutClosed(false)
     setRetry(null)
 
-    const options = {
+    const rzp = new window.Razorpay({
       key: config.key_id,
       amount: orderData.amount,
       currency: orderData.currency,
       order_id: orderData.id,
       name: 'Revenue Recovery Demo',
-      description:
-        mode === 'fail'
-          ? 'Live demo — intentionally failing test card'
-          : 'Live demo — recovery attempt with success test card',
+      description: 'Live demo — intentionally failing test card',
       prefill: { name: 'Demo Customer', email: 'demo@example.com', contact: '9999999999' },
-      // Note: Razorpay Checkout requires manual card entry from the
-      // user for security — we can't script the card fields directly.
-      // We show the exact test card to type in the on-screen banner.
-      handler: async function (response) {
+      handler: function () {
         settle()
-        if (mode === 'fail') {
-          // The payment went through, so there is no failure to recover.
-          setError('That payment succeeded, so there is no failure to recover. Start over and use the ' +
-            `failing test card (${TEST_CARD_FAIL.number}), then ${TEST_CARD_FAIL.bankPage} on the bank page.`)
-        } else {
-          // Checkout's signed success response: the backend verifies the
-          // signature before it records a recovery.
-          await handleRecoverySuccess(order.id, orderData.id, response.razorpay_payment_id, response.razorpay_signature)
-        }
+        // The payment went through, so there is no failure to recover.
+        setError('That payment succeeded, so there is no failure to recover. Start over and use the ' +
+          `failing test card (${TEST_CARD_FAIL.number}), then ${TEST_CARD_FAIL.bankPage} on the bank page.`)
       },
       modal: {
         ondismiss: function () {
@@ -140,20 +228,12 @@ export default function LiveDemo({ navigate }) {
           if (!settled) setCheckoutClosed(true)
         },
       },
-    }
-
-    const rzp = new window.Razorpay(options)
+    })
     rzpRef.current = rzp
     rzp.on('payment.failed', async function (response) {
       // Close Checkout's own retry screen: the app takes it from here.
       settle()
-      const paymentId = response.error.metadata.payment_id
-      if (mode === 'fail') {
-        await handleFailure(orderData.id, paymentId)
-      } else {
-        // A failed recovery attempt is a real outcome too: record it.
-        await handleRecoverySuccess(order.id, orderData.id, paymentId)
-      }
+      await handleFailure(orderData.id, response.error.metadata.payment_id)
     })
     rzp.open()
   }
@@ -166,51 +246,11 @@ export default function LiveDemo({ navigate }) {
         session: true,
         params: { order_id: orderId, payment_id: paymentId },
       })
-      setFailureInfo(data)
-      setStage(STAGES.FAILURE_RECORDED)
+      setView(data)
+      setStage(STAGES.AGENT)
     } catch (e) {
       setError(e.message)
       setRetry(() => () => handleFailure(orderId, paymentId))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function attemptRecovery() {
-    setError(null)
-    setBusy(true)
-    try {
-      // The server creates the recovery order and binds it to this
-      // session; report-recovery only accepts a payment on this order.
-      const orderData = await apiFetch('/api/live-demo/create-recovery-order', {
-        method: 'POST',
-        session: true,
-        params: { order_id: order.id },
-      })
-      setRecoveryOrder(orderData)
-      setStage(STAGES.RECOVERY_ORDER_CREATED)
-      openCheckout(orderData, 'success')
-    } catch (e) {
-      setError(e.message)
-      setBusy(false)
-    }
-  }
-
-  async function handleRecoverySuccess(originalOrderId, recoveryOrderId, recoveryPaymentId, signature) {
-    setBusy(true)
-    try {
-      const params = {
-        order_id: originalOrderId,
-        recovery_order_id: recoveryOrderId,
-        recovery_payment_id: recoveryPaymentId,
-      }
-      if (signature) params.razorpay_signature = signature
-      const data = await apiFetch('/api/live-demo/report-recovery', { method: 'POST', session: true, params })
-      setResult(data)
-      setStage(STAGES.DONE)
-    } catch (e) {
-      setError(e.message)
-      setRetry(() => () => handleRecoverySuccess(originalOrderId, recoveryOrderId, recoveryPaymentId, signature))
     } finally {
       setBusy(false)
     }
@@ -223,12 +263,6 @@ export default function LiveDemo({ navigate }) {
     run()
   }
 
-  function reopenCheckout() {
-    setError(null)
-    if (stage === STAGES.ORDER_CREATED) openCheckout(order, 'fail')
-    else openCheckout(recoveryOrder, 'success')
-  }
-
   function reset() {
     rzpRef.current?.close()
     rzpRef.current = null
@@ -236,9 +270,7 @@ export default function LiveDemo({ navigate }) {
     setRetry(null)
     setStage(STAGES.IDLE)
     setOrder(null)
-    setFailureInfo(null)
-    setRecoveryOrder(null)
-    setResult(null)
+    setView(null)
     setError(null)
   }
 
@@ -248,12 +280,12 @@ export default function LiveDemo({ navigate }) {
       <main id="main" className="page wrap">
         <header className="page-head">
           <p className="eyebrow">Live demo · Razorpay Test Mode · nothing simulated</p>
-          <h1 className="display page-title">Fail a real payment, then recover it</h1>
+          <h1 className="display page-title">Fail a real payment, then watch the agent recover it</h1>
           <p className="page-lede">
-            A real Razorpay test order, a real Checkout failure with Razorpay's documented
-            test card, and a real recovery attempt on an order the server creates. The
-            result counts only if Razorpay reports the payment captured and Checkout's
-            signature verifies.
+            You fail a real Razorpay test payment. The agent reads the real error, decides, and
+            acts: it sends the customer a recovery link (now, after a delay, or with the failed
+            method hidden) or opens a support case. You then play the customer in another tab.
+            A recovery counts only if Razorpay reports the payment captured.
           </p>
         </header>
         {children}
@@ -271,14 +303,15 @@ export default function LiveDemo({ navigate }) {
     )
   }
 
-  const currentStep = { [STAGES.IDLE]: 0, [STAGES.ORDER_CREATED]: 1, [STAGES.FAILURE_RECORDED]: 2,
-                        [STAGES.RECOVERY_ORDER_CREATED]: 2, [STAGES.DONE]: 3 }[stage]
-  const inProgress = [STAGES.ORDER_CREATED, STAGES.FAILURE_RECORDED, STAGES.RECOVERY_ORDER_CREATED].includes(stage)
-  const recovered = result?.recovery_outcome === 'recovered'
+  const currentStep = stage === STAGES.IDLE ? 0
+    : stage === STAGES.ORDER_CREATED ? 1
+    : view?.stage === 'awaiting_customer' ? (view.current_request?.has_order ? 3 : 2)
+    : 4
+  const finished = view && ['recovered', 'escalated', 'held'].includes(view.stage)
 
   return shell(
     <>
-      <ol className="steps" aria-label="Demo progress">
+      <ol className="steps steps-5" aria-label="Demo progress">
         {STEP_NAMES.map((name, i) => (
           <li key={name} className={i < currentStep ? 'is-done' : i === currentStep ? 'is-current' : ''}
               aria-current={i === currentStep ? 'step' : undefined}>
@@ -310,69 +343,16 @@ export default function LiveDemo({ navigate }) {
         <section className="stage-panel">
           <p>Real order created: <code>{order.id}</code>. In the Checkout popup, pay with the <strong>failing</strong> test card:</p>
           <TestCard card={TEST_CARD_FAIL} />
-          <CheckoutStatus closed={checkoutClosed} busy={busy} onReopen={reopenCheckout} />
+          <CheckoutStatus closed={checkoutClosed} busy={busy} onReopen={() => { setError(null); openCheckout(order) }} />
         </section>
       )}
 
-      {stage === STAGES.FAILURE_RECORDED && failureInfo && (
-        <section className="stage-panel">
-          <h2 className="stage-title tone-real">Real failure recorded from Razorpay</h2>
-          <dl className="facts">
-            <div><dt>Failure reason</dt><dd>{failureInfo.failure_reason.replace(/_/g, ' ')}</dd></div>
-            <div><dt>Razorpay error</dt><dd><code>{failureInfo.raw_error_code}</code></dd></div>
-            <div><dt>Agent's action</dt><dd>{failureInfo.recommended_action.replace(/_/g, ' ')}</dd></div>
-            <div><dt>Safety gate</dt><dd className={failureInfo.safety_check_passed ? 'tone-real' : 'tone-danger'}>
-              {failureInfo.safety_check_passed ? 'passed' : 'blocked'}</dd></div>
-          </dl>
-          {failureInfo.safety_check_passed ? (
-            <button className="btn btn-paper" onClick={attemptRecovery} disabled={busy}>
-              {busy ? 'Creating the recovery order…' : 'Attempt a real recovery'}
-            </button>
-          ) : (
-            <p className="tone-danger">The safety gate blocked recovery. No further action is taken on this payment.</p>
-          )}
-        </section>
-      )}
+      {stage === STAGES.AGENT && view && <AgentPanel view={view} />}
 
-      {stage === STAGES.RECOVERY_ORDER_CREATED && (
-        <section className="stage-panel">
-          <p>Real recovery order created: <code>{recoveryOrder.id}</code>. In the Checkout popup, pay with the <strong>success</strong> test card:</p>
-          <TestCard card={TEST_CARD_SUCCESS} />
-          <CheckoutStatus closed={checkoutClosed} busy={busy} onReopen={reopenCheckout} />
-        </section>
-      )}
-
-      {stage === STAGES.DONE && result && (
-        <section className="stage-panel result">
-          <div className="result-slip">
-            <h2 className="result-title">
-              {recovered ? 'Recovered — verified by Razorpay Test Mode' : `Real recovery outcome: ${result.recovery_outcome.replace(/_/g, ' ')}`}
-            </h2>
-            <dl className="receipt-lines">
-              <div className="receipt-line"><dt>Amount recovered</dt><dd className="is-strong">₹{(result.amount_recovered / 100).toFixed(2)}</dd></div>
-              <div className="receipt-line"><dt>Attempts</dt><dd>{result.recovery_attempts} of {result.max_attempts}</dd></div>
-            </dl>
-            <div className={`stamp ${recovered ? 'stamp-real' : 'stamp-danger'}`} aria-hidden="true">
-              {recovered ? 'Captured · verified' : 'Not recovered'}
-            </div>
-            <p className="receipt-foot">From Razorpay's payment status, not a probability model (outcome_is_simulated: false).</p>
-          </div>
-          <div className="cta-row">
-            {result.stage === 'recovery_failed' && result.recovery_attempts < result.max_attempts && (
-              <button className="btn btn-paper" onClick={attemptRecovery} disabled={busy}>
-                {busy ? 'Creating the recovery order…' : 'Try another recovery attempt'}
-              </button>
-            )}
-            <button className="btn btn-ghost" onClick={reset}>Start over</button>
-          </div>
-          {result.stage === 'recovery_failed' && result.recovery_attempts >= result.max_attempts && (
-            <p className="tone-danger">Retry budget used: the safety gate allows no further attempts on this payment.</p>
-          )}
-        </section>
-      )}
-
-      {inProgress && (
-        <button className="link-btn" onClick={reset} disabled={busy}>Cancel and start over</button>
+      {stage !== STAGES.IDLE && (
+        <button className={finished ? 'btn btn-ghost' : 'link-btn'} onClick={reset} disabled={busy}>
+          {finished ? 'Start over' : 'Cancel and start over'}
+        </button>
       )}
     </>
   )

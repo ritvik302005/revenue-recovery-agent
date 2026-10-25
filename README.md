@@ -13,7 +13,8 @@ The decisions are **rule-based**: a documented error mapping, an action table an
 | Order | Real Razorpay test-mode order | A local order id; optionally, real test-mode orders for the first 5 records |
 | Failure | Real Checkout failure, real `error_reason` from Razorpay | Synthetic: a documented Razorpay error code assigned by a generator |
 | Agent decision | Rule-based, same code as the batch | Rule-based |
-| Recovery outcome | **Real**: Razorpay reports the recovery payment `captured`, on a server-created recovery order, with a valid Checkout signature | **Simulated** by a probability model; always labelled `outcome_is_simulated: true` |
+| Agent action | **Executed**: a recovery link for the customer (now, after a delay, or with the failed method hidden), a reminder, or a support case; messages appear in a demo outbox instead of SMS/email | The same execution plan is recorded; nothing is sent |
+| Recovery outcome | **Real**: the customer pays through the agent's link; Razorpay reports it `captured` on the order created for that link, confirmed by Checkout's signature or a signed webhook | **Simulated** by a probability model; always labelled `outcome_is_simulated: true` |
 
 The two are never blended into one number.
 
@@ -72,7 +73,7 @@ npm test
 
 ## Using it
 
-- **Live demo:** follow the on-screen test-card steps. The failing card only fails if you choose **Failure** on Razorpay's mock bank page. Full walkthrough in `docs/DEMO_SCRIPT.md`.
+- **Live demo:** fail a real test payment (the failing card only fails if you choose **Failure** on Razorpay's mock bank page), watch the agent act, then open the outbox link as the customer and pay it. Full walkthrough in `docs/DEMO_SCRIPT.md`.
 - **Batch evaluation:** set a size and a seed (the same seed reproduces the same run) and click **Run Batch**. Click a row, or focus its payment id and press Enter, to see its audit trail. The headline numbers on the landing page come from 500 seeded runs (`docs/EVALUATION.md`).
 
 ## Documentation

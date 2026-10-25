@@ -16,20 +16,27 @@ A walkthrough for presenting the project (about 5 minutes). Lead with the live d
 
 Be clear that the decisions are **rule-based** (a lookup table plus a safety gate), orchestrated with LangGraph. There is no ML model or LLM.
 
-## 2. The live demo, everything real (2 min)
+## 2. The live demo, everything real (2–3 min)
 
-Click **Try Real Razorpay Demo**, then **Start Live Demo**.
+Click **Run the live demo**, then **Start the live demo**. You play two people: the merchant's operator (this tab) and the customer (a second tab).
 
-1. The server creates a real ₹10 test order. In Checkout, pay with the failing test card **4100 2800 0009 0000** (any future expiry, any CVV). On Razorpay's mock bank page, choose **Failure**.
-2. The app fetches the failed payment from Razorpay and shows its real `error_reason` (`payment_timed_out` for this card), the category it maps to, the recommended action and the safety-gate result.
-3. Click **Attempt Real Recovery**. The **server** creates the recovery order and binds it to this session. Pay with **4100 2800 0000 1007** and choose **Success** (or any 4–10 digit OTP).
-4. The result says **Recovered — verified by Razorpay Test Mode**. Point out what that took: Razorpay reports the payment `captured`, it belongs to the recovery order the server created, the amount and currency match, and Checkout's signature verifies.
+1. **Fail a payment.** The server creates a real ₹10 test order. In Checkout, pay with the failing test card **4100 2800 0009 0000** (any future expiry, any CVV) and choose **Failure** on Razorpay's mock bank page.
+2. **The agent decides and acts at once.** The page shows the real `error_reason` (`payment_timed_out` → bank timeout), the action (**retry same method**), and **what the agent did**: it opened a recovery request and put the message the customer would get by SMS/email into the **Outbox**.
+   > "The decision isn't just displayed: it's executed. The customer now has a link."
+3. **Be the customer.** Click **Open as the customer ↗**. A new tab shows the customer's page: the amount, the reason in plain words, and **Pay ₹10.00**.
+4. **Show re-planning (recommended).** Pay with the failing card again and choose **Failure**. Back in the operator tab, the agent has escalated to **suggest alternate method**: a new message in the outbox, and the new link hides **card**. Open it: card isn't offered. Pay with UPI **success@razorpay** (or netbanking → any bank → Success).
+   - Or skip this and pay the first link with **4100 2800 0000 1007** → **Success**.
+5. **Verified.** The operator tab updates by itself: **Recovered — verified by Razorpay Test Mode**, with the recovery order id. Point out what that took: the payment is on the order the server created for that link, amount and currency match, Razorpay reports it `captured`, and Checkout's signature (or Razorpay's signed webhook, once deployed) verifies.
 
-> "Nothing in this result is simulated. The browser can't pick a different order, replay the result, or claim success: the server checks all of it with Razorpay."
+> "Nothing here is simulated: a real failure, the agent's real action, a real customer payment, verified with Razorpay."
 
-If Checkout gets closed by mistake, click **Reopen Checkout**; **Cancel and start over** is there at every step. If you choose Failure on the recovery attempt instead, the app offers another attempt, up to three. The fourth is blocked by the same safety gate the batch uses.
+Worth knowing:
+- A failure that maps to **retry with delay** (e.g. a bank outage) gives the customer a link that unlocks after 30 seconds (shortened for the demo).
+- An unrecognised reason opens a **support case** and sends the customer nothing to pay.
+- After three failed or unpaid links the safety gate **holds** the case, as the batch does.
+- If Checkout gets closed by mistake, **Reopen Checkout**; **Cancel and start over** is always there.
 
-Back on the landing page, the **Recorded case** card and the audit trail now show this real case.
+Back on the landing page, the receipt and the audit tape now show this real case, stamped by its outcome.
 
 ## 3. The batch evaluation, a simulation (1 min)
 

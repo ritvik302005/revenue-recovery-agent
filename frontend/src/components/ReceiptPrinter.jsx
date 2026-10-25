@@ -8,6 +8,7 @@ export function stampFor(data) {
   if (data.kind !== 'live_demo') return { tone: 'sim', text: 'Simulated' }
   if (data.outcome === 'recovered') return { tone: 'real', text: 'Captured · verified' }
   if (data.outcome === 'held_no_action') return { tone: 'danger', text: 'Held' }
+  if (data.stage === 'escalated') return { tone: 'ink', text: 'Escalated to support' }
   return { tone: 'danger', text: 'Not recovered' }
 }
 

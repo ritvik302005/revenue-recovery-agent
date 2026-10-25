@@ -27,7 +27,8 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 | File | Role |
 |---|---|
 | `main.py` | All endpoints, CORS, live-demo session logic |
-| `access.py` | Session tokens, order budgets (per session and per day), proxy-aware per-IP rate limits in the shared store (§3a) |
+| `access.py` | Session tokens, order budgets (per session and per day; by token or owner id), proxy-aware per-IP rate limits in the shared store (§3a) |
+| `executor.py` | `plan_execution`: what an approved action does (request now / after a delay / with a method hidden, reminder, support case); shared by the live demo and the batch (§5) |
 | `recovery_agent.py` | Agent graph, action table, safety gate, simulated outcome model |
 | `simulate_batch.py` | Seeded synthetic batch; optionally creates real Razorpay orders per record |
 | `razorpay_client.py` | SDK client with timeout adapter; `create_real_order`, `fetch_real_payment`, `classify_real_payment_error`; error taxonomy table |
@@ -67,9 +68,12 @@ Frontend files (`frontend/src/`):
 | GET | `/api/showcase/case` | – | – | no | One real recorded case for the landing page: latest live-demo result (`kind: live_demo`), else a batch record (`kind: batch_record`, labelled synthetic failure + simulated outcome), else `{"kind": "none"}` |
 | GET | `/api/live-demo/config` | – | – | no | Returns public `key_id`; `configured` is false for live-mode keys (`get_client` refuses `rzp_live_` keys) |
 | POST | `/api/live-demo/create-order` | session | 10/min/IP | yes (1 order from the budget; refunded if Razorpay fails) | ₹1–₹1,000, receipt generated server-side; the session record stores the token's owner id |
-| POST | `/api/live-demo/report-failure?order_id&payment_id` | session, owner | 30/min/IP | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; payment status must be `failed` (`created`/`authorized` → 409 not final; anything else → 400) |
-| POST | `/api/live-demo/create-recovery-order?order_id` | session, owner | 10/min/IP | yes (1 order from the budget) | Stage `failure_recorded` or `recovery_failed` → `recovery_order_created`; runs `safety_check` with `recovery_attempts` first (≥ 3 → stage `held`, 409, no order); server creates the order for the original amount and stores `current_recovery_order_id` |
-| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id&razorpay_signature` | session, owner | 30/min/IP | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording; a **captured** payment needs a valid Checkout signature (400 otherwise); failed attempts need none |
+| POST | `/api/live-demo/report-failure?order_id&payment_id` | session, owner | 30/min/IP | yes (fetch) | Checks order/amount/INR and `status == "failed"` (`created`/`authorized` → 409; else 400), then classify → decide → gate → **execute** (§5). Stage `order_created` → `awaiting_customer` / `escalated` / `held`. Returns the operator view |
+| GET | `/api/live-demo/session?order_id` | session, owner | 30/min/IP | no | Operator view: stage, decision, attempts, current request, outbox, support case, result, audit trail. Polled while the customer holds a request; notices an expired request (counts as a failed attempt) |
+| GET | `/api/recover/{token}` | token only | 30/min/IP | no | The customer's view of a recovery request: amount, plain reason, status (`scheduled` / `open` / `paid` / `failed` / `expired` / `superseded` / `escalated`), countdown, hidden method, Checkout config |
+| POST | `/api/recover/{token}/order` | token only | 10/min/IP | yes (1 order from the **demo session's** budget) | Creates the request's Razorpay order once (idempotent; a race refunds the loser); 409 while scheduled or once inactive; 410 if the demo session has expired |
+| POST | `/api/recover/{token}/report?payment_id&razorpay_signature` | token only | 30/min/IP | yes (fetch) | Settles the request: payment must be on the request's order, amount, INR; non-final → 409; captured needs Checkout's signature for that order (400 otherwise) → `recovered`; failed → re-plan (§5) |
+| POST | `/api/webhooks/razorpay` | `X-Razorpay-Signature` | – | no | HMAC-SHA256 of the raw body with `RAZORPAY_WEBHOOK_SECRET` (400 if invalid; 503 if unset); de-duplicated by `X-Razorpay-Event-Id`. `payment.failed` on a demo order → same as report-failure; `payment.captured` / `order.paid` / `payment.failed` on a recovery order → settle. A 409 from the other path → `already_recorded`; a mismatched payment → logged, `rejected` (200) |
 
 Out-of-order or repeated calls return **409**; unknown sessions **404**. Order and payment ids are validated on every live-demo endpoint (`^order_[A-Za-z0-9]{1,40}$`, `^pay_[A-Za-z0-9]{1,40}$`; signature ≤ 128 chars) → **422** before any Razorpay call. Every stage change is an atomic read-check-write (`storage.update_atomic`).
 
@@ -98,35 +102,30 @@ Measured (P4-2, 200 seeds × 60, before P4-3): all four outcomes occur (recovere
 
 ## 5. Live demo flow
 
-### Current (after P1-1, P1-2)
-```
-create-order (amount) ──► stage=order_created ──► Checkout (failing test card) ──► payment.failed
-   ──► report-failure(order_id, payment_id) ──► stage=failure_recorded   (or held if the safety gate blocks)
-create-recovery-order(order_id) ──► server creates order, stores current_recovery_order_id
-   ──► stage=recovery_order_created ──► Checkout (success test card) ──► handler / payment.failed
-   ──► report-recovery(order_id, recovery_order_id, recovery_payment_id) ──► stage=recovered | recovery_failed
-```
-Fixed: recovery order bound to the session (B2); stages only move forward, replays get 409 (B3); concurrent reports record once.
-Payment reuse across sessions is rejected (P1-3, by the binding).
-Retries (P1-4): from `recovery_failed`, `create-recovery-order` starts a new attempt; `report-recovery` counts `recovery_attempts`; the agent's `safety_check` blocks attempt 4 (stage `held`, logged in the audit trail). The response carries `recovery_attempts` and `max_attempts`.
-Signatures (P1-5): `razorpay_client.verify_checkout_signature` (SDK `utility.verify_payment_signature`: HMAC-SHA256 of `order_id|payment_id` with the key secret, constant-time compare, no API call). Required before a captured recovery is recorded; Razorpay's `payment.failed` event carries no signature, so failed attempts are recorded from the fetched status alone.
-Failure status (P2-1): `report-failure` accepts only `status == "failed"`; a captured payment can no longer be recorded as a failure (B1).
+Since Phase 7 the agent's decision is **executed**, and the customer (not the operator) pays what it sent.
 
-### Target (Phases 1–2)
 ```
-order_created
-   │ report-failure: payment.status == failed, belongs to order, amount, INR, ID not used before
-   ▼
-failure_recorded
-   │ create-recovery-order: server creates order, stores recovery_order_id in session
-   ▼
-recovery_order_created
-   │ report-recovery: signature valid, payment belongs to the stored recovery_order_id,
-   │                   amount, INR, status, payment ID not used before
-   ├──► recovered            (final)
-   └──► recovery_failed ──► create-recovery-order again while attempts < MAX_ATTEMPTS
+create-order ──► order_created ──► operator's Checkout (failing test card) ──► payment.failed
+   │ report-failure (browser)  or  payment.failed webhook (Razorpay)
+   ▼  classify → select_action → safety_check → EXECUTE (executor.plan_execution)
+   ├─ fraud ─────────────────────────────────────────────► held (final)
+   ├─ escalate_to_support ──► support case, no payment ───► escalated (final)
+   └─ retry / delay / alternate / reminder ──► recovery request rr_<token> + outbox message
+        ▼
+   awaiting_customer ── customer opens /recover/<token> ── POST order (once) ── Checkout
+        │ report (Checkout signature)  or  payment.captured / order.paid webhook
+        ├─ captured ──────────────────────────────────────► recovered (final)
+        └─ failed, or request expired unpaid ──► replan: next action → safety_check
+             ├─ attempts < 3 ──► new request (or support case) ──► awaiting_customer / escalated
+             └─ attempts = 3 ──────────────────────────────► held (final)
 ```
-Every transition is a compare-and-set on the session record. Used payment IDs are kept in a registry.
+
+- **Executor** (`executor.py`): `plan_execution(action, amount, failed_method)` → `ExecutionPlan` (kind, delay, hidden method, customer message, audit summary). `retry_with_delay` waits `RECOVERY_DELAY_SECONDS` (30 s demo); `suggest_alternate_method` hides Razorpay's `payment.method` of the failed payment via Checkout `config.display.hide`; `escalate_to_support` opens a case and sends nothing. The batch uses the same function and only records the plan.
+- **Recovery requests** live inside the session record (`requests[token]`, `current_request`), so every change is one atomic update. Token: `rr_` + 24 random bytes (URL-safe); the token is the customer's only access; never written whole into the audit trail or showcase. One Razorpay order per request, created only when the customer opens it. Unpaid requests expire after `RECOVERY_REQUEST_TTL_SECONDS` (noticed lazily by the next read) and count as a failed attempt.
+- **Re-planning**: the batch's escalation chain (`recovery_agent.next_action`): retry → alternate method → reminder → support; delay → alternate method. The safety gate runs before each execution and holds the case at 3 attempts.
+- **Verification**: a capture counts only with Checkout's signature for the request's order (`verify_checkout_signature`, HMAC-SHA256 of `order_id|payment_id`) or a signed webhook. Checkout's report and the webhook race safely: the first settles the request, the second gets 409 / `already_recorded`.
+- Kept from Phases 1–2: server-bound orders (B2), forward-only stages with 409 on replays (B3), no payment reuse (P1-3, by the binding), concurrent reports record once, only `status == "failed"` starts a recovery (B1).
+- The demo **outbox** stands in for SMS/email (owner's decision): messages are stored with the session and shown to the operator with "Open as the customer". Payment Links were not used: test mode caps them at 30 per business and they can't hide a method.
 
 ## 6. Data and provenance
 
@@ -141,7 +140,7 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 ## 7. Storage
 
-- Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600), `showcase:latest_live_case` (no expiry; snapshot written when a session reaches `recovered`, `recovery_failed` or `held`).
+- Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600), `showcase:latest_live_case` (no expiry; snapshot written when a session reaches `recovered`, `escalated` or `held`), `recovery_token:<token>` → session order id and `recovery_order:<razorpay order id>` → token (TTL as the session), `webhook_event:<event id>` (2 days, de-duplication), `health:razorpay`, `access:*`, `cap:live_orders:*`, `ratelimit:*`.
 - SQLite file `backend/state.db` by default; Redis when `REDIS_URL` is set (`redis` is in requirements; the Redis branch is tested against fakeredis in `tests/test_storage_redis.py`, not yet against a real Upstash instance). `/api/health` reports which backend is live, so a silent fallback to SQLite is visible.
 - Atomic operation (P1-2): `update_atomic(key, fn, ttl)`. SQLite uses `BEGIN IMMEDIATE`; Redis uses `WATCH`/`MULTI` with retry. `fn` may raise to abort without writing.
 - No used-payment registry: binding each recovery order to one session (P1-1) plus Razorpay's one-payment-one-order rule already prevents reuse (P1-3, tested).
@@ -162,19 +161,20 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 | `LIVE_DEMO_TTL_SECONDS` | backend env | Session expiry |
 | `MAX_LIVE_ORDERS_PER_BATCH` | backend env | Cap on real test orders per batch when `try_live_orders` is on (default 5) |
 | `EVALUATION_PATH` | backend env | Override the evaluation JSON served by `/api/evaluation` |
+| `RECOVERY_DELAY_SECONDS` | backend env | Wait before a `retry_with_delay` request becomes payable (default 30, shortened for the demo) |
+| `RECOVERY_REQUEST_TTL_SECONDS` | backend env | How long a recovery request stays payable before it counts as unpaid (default 1800) |
+| `RAZORPAY_WEBHOOK_SECRET` | backend env | Secret of the test-mode webhook set in the Razorpay Dashboard (not the API secret); unset → the webhook endpoint returns 503 |
 | `VITE_API_BASE` | frontend build env | Backend URL; default `http://localhost:8000` |
 
 ## 9. Frontend
 
-- Routing by hand in `App.jsx` (`/`, `/demo`, `/dashboard`, History API). `frontend/vercel.json` rewrites every path to `index.html`, so a refresh on `/demo` works on Vercel (P5-13).
-- Views: `Landing.jsx` (+ visual components), `LiveDemo.jsx`, `Dashboard.jsx` (+ `MetricsSection`, `ResultsTable`).
-- Landing case (P3-2): `hooks/useShowcaseCase.js` fetches `/api/showcase/case` (and again when the tab becomes visible); `RecordedCaseCard.jsx` (hero) and `AuditTrailVisual.jsx` render it, with loading / error / empty states. `src/api.js` holds `API_BASE` (Dashboard and LiveDemo still define their own until P5-4).
-- `RevenueNetworkBackground.jsx`: full-screen canvas on every view.
-- API base duplicated in `LiveDemo.jsx` and `Dashboard.jsx`; no shared fetch helper yet (P5-4).
+- Routing by hand in `App.jsx` (`/`, `/demo`, `/dashboard`, `/recover/<token>`, History API). `frontend/vercel.json` rewrites every path to `index.html`, so a refresh or an opened recovery link works on Vercel (P5-13).
+- Views: `Landing.jsx`, `LiveDemo.jsx` (operator: fail a payment, then the agent panel, outbox and result; polls the session), `RecoverPage.jsx` (the customer's recovery link: countdown, Checkout with the failed method hidden, verified result), `Dashboard.jsx`.
+- `checkout.js` loads Razorpay Checkout and holds the documented test instruments.
 
 ## 10. Deployment (target)
 
-- Backend: Render (or similar), `uvicorn main:app --host 0.0.0.0 --port $PORT`, env vars above, Redis for state, proxy headers trusted for rate limiting.
+- Backend: Render (or similar), `uvicorn main:app --host 0.0.0.0 --port $PORT`, env vars above, Redis for state, proxy headers trusted for rate limiting. Add a **test-mode webhook** in the Razorpay Dashboard pointing at `https://<backend>/api/webhooks/razorpay` with events `payment.failed`, `payment.captured`, `order.paid`, and set `RAZORPAY_WEBHOOK_SECRET`.
 - Frontend: Vercel, root `frontend`, `VITE_API_BASE` set, `vercel.json` SPA rewrite.
 - Never deploy with live Razorpay keys.
 

@@ -5,8 +5,8 @@ const STAGES = [
   { title: 'Diagnose', eyebrow: 'Evidence', input: 'The payment’s Razorpay error code and metadata.', action: 'Maps the raw error to a known, documented failure reason.', stop: 'Unknown errors are escalated rather than guessed.' },
   { title: 'Decide', eyebrow: 'Policy', input: 'The diagnosed reason and a fixed strategy table.', action: 'Selects the allowed recovery option for that failure type.', stop: 'No matching policy means an escalation, never improvisation.' },
   { title: 'Safety gate', eyebrow: 'Control', input: 'Proposed action plus the payment’s attempt history.', action: 'Enforces hard checks before any recovery action is permitted.', stop: 'Fraud flags and exhausted retry budgets block the case outright.' },
-  { title: 'Act', eyebrow: 'Execution', input: 'Only a gate-approved action.', action: 'Runs the approved intervention or routes it to support.', stop: 'The escalation ceiling prevents endless retry loops.' },
-  { title: 'Verify', eyebrow: 'Proof', input: 'The final payment status from Razorpay’s API.', action: 'In the live demo, counts a recovery only when Razorpay reports the payment captured and the Checkout signature verifies. Batch outcomes are simulated.', stop: 'Any other status stays unresolved; it is never called recovered.' },
+  { title: 'Act', eyebrow: 'Execution', input: 'Only a gate-approved action.', action: 'Carries the decision out: sends the customer a recovery link (now, after a delay, or with the failed method hidden), a reminder, or opens a support case instead of asking for money.', stop: 'A failed or unpaid link escalates to the next action; after three attempts the gate holds the case.' },
+  { title: 'Verify', eyebrow: 'Proof', input: 'The customer’s payment, as Razorpay reports it.', action: 'In the live demo, counts a recovery only when Razorpay reports the payment captured, confirmed by Checkout’s signature or a signed webhook. Batch outcomes are simulated.', stop: 'Any other status stays unresolved; it is never called recovered.' },
 ]
 
 // The six controls in order (a real sequence, so they're numbered). A tab
