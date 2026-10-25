@@ -141,7 +141,7 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 ## 7. Storage
 
 - Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600), `showcase:latest_live_case` (no expiry; snapshot written when a session reaches `recovered`, `recovery_failed` or `held`).
-- SQLite file `backend/state.db` by default; Redis when `REDIS_URL` is set (untested).
+- SQLite file `backend/state.db` by default; Redis when `REDIS_URL` is set (`redis` is in requirements; the Redis branch is tested against fakeredis in `tests/test_storage_redis.py`, not yet against a real Upstash instance). `/api/health` reports which backend is live, so a silent fallback to SQLite is visible.
 - Atomic operation (P1-2): `update_atomic(key, fn, ttl)`. SQLite uses `BEGIN IMMEDIATE`; Redis uses `WATCH`/`MULTI` with retry. `fn` may raise to abort without writing.
 - No used-payment registry: binding each recovery order to one session (P1-1) plus Razorpay's one-payment-one-order rule already prevents reuse (P1-3, tested).
 - Target: Redis/Upstash in deployment (Render's disk is not persistent).
@@ -165,7 +165,7 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 
 ## 9. Frontend
 
-- Routing by hand in `App.jsx` (`/`, `/demo`, `/dashboard`, History API). No server rewrite yet → refresh 404 on static hosts (P5-13).
+- Routing by hand in `App.jsx` (`/`, `/demo`, `/dashboard`, History API). `frontend/vercel.json` rewrites every path to `index.html`, so a refresh on `/demo` works on Vercel (P5-13).
 - Views: `Landing.jsx` (+ visual components), `LiveDemo.jsx`, `Dashboard.jsx` (+ `MetricsSection`, `ResultsTable`).
 - Landing case (P3-2): `hooks/useShowcaseCase.js` fetches `/api/showcase/case` (and again when the tab becomes visible); `RecordedCaseCard.jsx` (hero) and `AuditTrailVisual.jsx` render it, with loading / error / empty states. `src/api.js` holds `API_BASE` (Dashboard and LiveDemo still define their own until P5-4).
 - `RevenueNetworkBackground.jsx`: full-screen canvas on every view.

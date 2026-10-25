@@ -83,10 +83,7 @@ def set_value(key: str, value: dict, ttl_seconds: Optional[int] = None) -> None:
     expiry in seconds (used for live-demo sessions)."""
     payload = json.dumps(value)
     if _redis_client:
-        if ttl_seconds:
-            _redis_client.setex(key, ttl_seconds, payload)
-        else:
-            _redis_client.set(key, payload)
+        _redis_client.set(key, payload, ex=ttl_seconds or None)
         return
 
     expires_at = (time.time() + ttl_seconds) if ttl_seconds else None
@@ -161,10 +158,7 @@ def update_atomic(key: str, fn, ttl_seconds: Optional[int] = None) -> dict:
                     raw = pipe.get(key)
                     new = fn(json.loads(raw) if raw is not None else None)
                     pipe.multi()
-                    if ttl_seconds:
-                        pipe.setex(key, ttl_seconds, json.dumps(new))
-                    else:
-                        pipe.set(key, json.dumps(new))
+                    pipe.set(key, json.dumps(new), ex=ttl_seconds or None)
                     pipe.execute()
                     return new
                 except redis.WatchError:

@@ -29,7 +29,7 @@ source .venv/bin/activate         # macOS / Linux
 pip install -r requirements.txt
 ```
 
-Create `backend/.env` with your Razorpay **test-mode** keys (Dashboard → Test Mode → Settings → API Keys):
+Copy `backend/.env.example` to `backend/.env` and fill in your Razorpay **test-mode** keys (Dashboard → Test Mode → Settings → API Keys). Every other setting is optional and documented in that file.
 
 ```
 RAZORPAY_KEY_ID=rzp_test_...
@@ -62,7 +62,7 @@ npm install
 npm run dev
 ```
 
-Opens on http://localhost:5173 and expects the backend at `http://localhost:8000`; override with `VITE_API_BASE` in `frontend/.env`.
+Opens on http://localhost:5173 and expects the backend at `http://localhost:8000`; override with `VITE_API_BASE` in `frontend/.env` (see `frontend/.env.example`). When deploying, also set the backend's `ALLOWED_ORIGINS` to the frontend's URL.
 
 Tests (Vitest + Testing Library; the API and Razorpay Checkout are mocked):
 

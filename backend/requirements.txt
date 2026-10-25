@@ -7,8 +7,10 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 python-dotenv==1.2.2
 razorpay==2.0.1
+redis==8.1.0
 uvicorn==0.52.4
 
 # Testing
 pytest==9.1.1
 httpx==0.28.1
+fakeredis==2.40.0
