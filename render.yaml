@@ -7,6 +7,7 @@ services:
     runtime: python
     rootDir: backend
     plan: free
+    region: singapore        # closest Render region to India; Upstash should be ap-southeast-1 (Singapore) too
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
