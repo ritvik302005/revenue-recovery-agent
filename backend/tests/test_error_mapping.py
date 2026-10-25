@@ -48,6 +48,29 @@ def test_unspecific_or_undocumented_reasons_are_unknown(error_reason):
     assert got == FailureReason.UNKNOWN
 
 
+# What Razorpay test mode actually returned for card 4100 2800 0009 0000 (2026-10-25).
+OBSERVED_GENERIC = {"error_reason": "payment_failed", "error_code": "BAD_REQUEST_ERROR",
+                    "error_source": "gateway", "error_step": "payment_authorization", "method": "card"}
+
+
+def test_generic_failure_at_card_authorization_is_a_decline():
+    from razorpay_client import classify_real_payment_error
+    got, raw = classify_real_payment_error(OBSERVED_GENERIC)
+    assert got == FailureReason.CARD_DECLINED
+    assert raw == "BAD_REQUEST_ERROR / payment_failed @ payment_authorization"
+
+
+@pytest.mark.parametrize("change", [
+    {"error_step": "payment_initiation"},     # failed before authorization
+    {"error_step": None},                     # no step: no evidence
+    {"method": "upi"},                        # not a card
+    {"method": "netbanking"},
+])
+def test_generic_failure_without_that_evidence_still_escalates(change):
+    from razorpay_client import classify_real_payment_error
+    assert classify_real_payment_error({**OBSERVED_GENERIC, **change})[0] == FailureReason.UNKNOWN
+
+
 def test_mapping_is_case_insensitive():
     from razorpay_client import classify_real_payment_error
     assert classify_real_payment_error({"error_reason": "CARD_DECLINED"})[0] == FailureReason.CARD_DECLINED

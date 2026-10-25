@@ -21,11 +21,10 @@ Be clear that the decisions are **rule-based** (a lookup table plus a safety gat
 Click **Run the live demo**, then **Start the live demo**. You play two people: the merchant's operator (this tab) and the customer (a second tab).
 
 1. **Fail a payment.** The server creates a real ₹10 test order. In Checkout, pay with the failing test card **4100 2800 0009 0000** (any future expiry, any CVV) and choose **Failure** on Razorpay's mock bank page.
-2. **The agent decides and acts at once.** The page shows the real `error_reason` (`payment_timed_out` → bank timeout), the action (**retry same method**), and **what the agent did**: it opened a recovery request and put the message the customer would get by SMS/email into the **Outbox**.
-   > "The decision isn't just displayed: it's executed. The customer now has a link."
-3. **Be the customer.** Click **Open as the customer ↗**. A new tab shows the customer's page: the amount, the reason in plain words, and **Pay ₹10.00**.
-4. **Show re-planning (recommended).** Pay with the failing card again and choose **Failure**. Back in the operator tab, the agent has escalated to **suggest alternate method**: a new message in the outbox, and the new link hides **card**. Open it: card isn't offered. Pay with UPI **success@razorpay** (or netbanking → any bank → Success).
-   - Or skip this and pay the first link with **4100 2800 0000 1007** → **Success**.
+2. **The agent decides and acts at once.** The page shows Razorpay's real error. In test mode this card returns the generic `payment_failed` at the `payment_authorization` step (Razorpay's docs say `payment_timed_out`; checked 2026-10-25), which the agent reads as a **card decline**. The action is **suggest alternate method**, and **what the agent did**: it opened a recovery request with **card hidden** and put the message the customer would get by SMS/email into the **Outbox**.
+   > "The decision isn't just displayed: it's executed. The customer now has a link, and it won't offer the card that just failed."
+3. **Be the customer.** Click **Open as the customer ↗**. A new tab shows the customer's page: the amount, the reason in plain words, **Pay ₹10.00**, and a note that card isn't offered. Pay with UPI **success@razorpay** (or netbanking → any bank → **Success**).
+4. **Show re-planning (optional).** Instead of succeeding, choose **Failure** in step 3. The agent escalates to the next action, a **reminder link**: a new outbox message and a new link. After a third failure it opens a support case; after three attempts the gate holds the case.
 5. **Verified.** The operator tab updates by itself: **Recovered — verified by Razorpay Test Mode**, with the recovery order id. Point out what that took: the payment is on the order the server created for that link, amount and currency match, Razorpay reports it `captured`, and Checkout's signature (or Razorpay's signed webhook, once deployed) verifies.
 
 > "Nothing here is simulated: a real failure, the agent's real action, a real customer payment, verified with Razorpay."

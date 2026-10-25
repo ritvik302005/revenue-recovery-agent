@@ -3,7 +3,9 @@ import { apiFetch } from '../api.js'
 import { formatINR, humanize } from '../hooks/useShowcaseCase.js'
 import { loadCheckoutScript, TEST_CARD_FAIL } from '../checkout.js'
 import SiteNav from './SiteNav.jsx'
+import SiteFooter from './SiteFooter.jsx'
 import HumanCheck from './HumanCheck.jsx'
+import CopyButton from './CopyButton.jsx'
 
 const STEP_NAMES = ['Create a real order', 'Fail a payment', 'Agent acts', 'Customer pays', 'Result']
 const POLL_MS = 2500
@@ -24,7 +26,10 @@ function CheckoutStatus({ closed, busy, onReopen }) {
 function TestCard({ card }) {
   return (
     <div className="test-card">
-      <div className="test-card-number">{card.number}</div>
+      <div className="test-card-row">
+        <div className="test-card-number">{card.number}</div>
+        <CopyButton value={card.number} label="Copy" />
+      </div>
       <div className="test-card-meta">
         <span>Expiry <b>{card.expiry}</b></span>
         <span>CVV <b>{card.cvv}</b></span>
@@ -292,6 +297,7 @@ export default function LiveDemo({ navigate }) {
         <HumanCheck />
         {children}
       </main>
+      <SiteFooter navigate={navigate} />
     </div>
   )
 

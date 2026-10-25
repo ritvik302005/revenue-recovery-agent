@@ -3,6 +3,7 @@ import MetricsSection from './MetricsSection.jsx'
 import ResultsTable from './ResultsTable.jsx'
 import { apiFetch } from '../api.js'
 import SiteNav from './SiteNav.jsx'
+import SiteFooter from './SiteFooter.jsx'
 import HumanCheck from './HumanCheck.jsx'
 
 const MAX_BATCH_SIZE = 500        // backend: n ≤ 500
@@ -132,6 +133,7 @@ export default function Dashboard({ navigate }) {
           </>
         )}
       </main>
+      <SiteFooter navigate={navigate} />
     </div>
   )
 }

@@ -280,7 +280,15 @@ def classify_real_payment_error(payment: dict) -> tuple:
     error_reason = (payment.get("error_reason") or "").strip().lower()
     error_code = payment.get("error_code") or ""
     raw = f"{error_code} / {error_reason or 'unknown'}"
-    return ERROR_REASON_TO_CATEGORY.get(error_reason, FailureReason.UNKNOWN), raw
+    category = ERROR_REASON_TO_CATEGORY.get(error_reason, FailureReason.UNKNOWN)
+    # Razorpay's generic reason carries no cause, but error_step and method do.
+    # A card payment that failed at the authorization step was declined there
+    # (observed 2026-10-25: test card 4100 2800 0009 0000 returns exactly this,
+    # not the payment_timed_out its docs list). Other generic failures stay UNKNOWN.
+    if (category is FailureReason.UNKNOWN and error_reason == "payment_failed"
+            and payment.get("error_step") == "payment_authorization" and payment.get("method") == "card"):
+        return FailureReason.CARD_DECLINED, f"{raw} @ payment_authorization"
+    return category, raw
 
 
 # One documented example per category, used to label synthetic batch

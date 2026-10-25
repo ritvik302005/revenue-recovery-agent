@@ -107,6 +107,44 @@ Max width 1200px; 24px gutters (16px on phones); the hero stacks on narrow scree
 
 **Fallback:** the same DOM without the curl and tilt under `prefers-reduced-motion`, and a flat layout on narrow screens. No WebGL, so no WebGL fallback is needed.
 
+## 5b. The livelier landing (2026-10-25, after the owner asked for "more attractive and animated")
+
+Same receipt system, more of it alive. Order: hero printer → two kinds of evidence → **one failure, six controls** (scroll story) → **try the policy** → the batch evaluation → the audit tape → FAQ.
+
+| Piece | What it does | Reduced motion |
+|---|---|---|
+| Hero | Text rises in sequence; "on the record." gets an ink underline; printer LED blinks while printing; the paper sways gently after printing; **Reprint** replays the print; contact shadow under the printer | Static, fully printed |
+| Evidence slips | A REAL / SIMULATED stamp lands on each slip as it scrolls in | Stamps shown |
+| Scroll story | The agent's six steps on the right; the recorded case's matching line prints on a sticky receipt on the left as each step reaches the middle of the screen; the stamp lands at Verify. Lines come only from the recorded case (`linesFor`). On narrow screens each step shows its own line | All lines printed |
+| Try the policy | Pick any documented Razorpay `error_reason` and the failed method; a decision slip prints from `GET /api/policy/preview` (the agent's real rules, nothing paid or sent) | Slip shown without the print |
+| Statement | Figures count up when the statement scrolls in; shows the evaluation's generation date | Final figures |
+| Dividers | Sections are separated by a receipt perforation | – |
+
+Performance after the change (local preview): Lighthouse mobile 93 / desktop 100, CLS 0, TBT ≈ 20 ms. Fonts are self-hosted (`@fontsource-variable`, width + weight axes) and preloaded; `useCountUp` runs no frame loop when there's nothing to count.
+
+## 5c. Checklist review (2026-10-25)
+
+The owner shared two checklists (website compliance; "20 things to add"). Decisions:
+
+| Item | Decision |
+|---|---|
+| Privacy policy, T&C | **Added**: one `/legal` page (what is kept and for how long, services involved, DPDP Act rights and contact, terms of use, "not affiliated with Razorpay"), linked from every footer, with a last-updated date |
+| Cookies policy / consent, simple cookie banner | **Not needed**: the site sets no cookies and runs no analytics; stated on `/legal`. A banner would imply tracking that doesn't exist |
+| Refund policy | **Not applicable**: test mode only, no money moves (stated in the terms) |
+| Form consent, collect only necessary data | Already true: no personal data is asked for; Checkout prefill is placeholder data |
+| Check tracking, UTM tracking | No tracking by design |
+| Third-party embeds | Razorpay Checkout and Cloudflare Turnstile are named on `/legal`; **Google Fonts removed** (self-hosted) |
+| Accessibility, contrast, keyboard forms, clear labels, alt text | Already covered (axe-core: 0 violations on every page; no content images) |
+| Remove fake reviews / false claims | Done in Phase 3 (no invented figures anywhere) |
+| Business details, image copyright | Contact in the footer; fonts are OFL; no stock images |
+| Mobile menu | **Added** (the nav links were hidden on phones with no way to open them) |
+| Copy button | **Added** for test card numbers and the test UPI ID |
+| Expandable FAQ | **Added** (six questions reviewers actually ask) |
+| Last updated date | **Added** on `/legal`; the evaluation shows its generation date |
+| Loading animations, hover states, sticky header, skip link, form success/error states | Already present |
+| Dark mode toggle | **No**: the system is dark by design, with paper as the light element; a second palette would dilute the receipt idea |
+| Site search, back-to-top, scroll progress bar, print stylesheet, password toggle, confirmation modals, floating contact button | **No**: a short site with no passwords; these would add clutter without helping anyone |
+
 ## 6. Decisions log
 
 | Date | Decision |
@@ -116,6 +154,7 @@ Max width 1200px; 24px gutters (16px on phones); the hero stacks on narrow scree
 | 2026-10-25 | Phase 6 system: printed-receipt signature, carbon/paper palette with stamp inks, Archivo + Martian Mono. Replaces both earlier themes. |
 | 2026-10-25 | 3D in CSS, not WebGL: the receipt must be real text; 0 KB budget. |
 | 2026-10-25 | Control board autoplay removed (distracting; ignored reduced motion). |
+| 2026-10-25 | Landing made livelier within the same system: scroll story replaces the control board; interactive policy slip; stamps on slips; reprint; FAQ; `/legal`; self-hosted fonts. |
 
 ## 7. What it replaced (state before Phase 6)
 

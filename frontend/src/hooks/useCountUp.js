@@ -12,6 +12,13 @@ export function useCountUp(value, duration = 700) {
     const start = performance.now()
     const from = 0
     const to = typeof value === 'number' ? value : 0
+    // Nothing to count (e.g. not scrolled into view yet), or reduced motion:
+    // show the value without running an animation frame loop.
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    if (to === from || reduced) {
+      setDisplay(to)
+      return
+    }
 
     function tick(now) {
       const progress = Math.min((now - start) / duration, 1)

@@ -31,7 +31,7 @@ from recovery_agent import run_recovery, select_recovery_action, safety_check, n
 from executor import plan_execution, MERCHANT_NAME, RECOVERY_REQUEST_TTL_SECONDS
 from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
-    create_real_order, fetch_real_payment, classify_real_payment_error,
+    create_real_order, fetch_real_payment, classify_real_payment_error, ERROR_REASON_TO_CATEGORY,
     verify_checkout_signature, verify_webhook_signature, RazorpayNotConfigured,
     webhook_configured as razorpay_webhook_configured,
     key_mode as razorpay_key_mode, HEALTH_KEY as RAZORPAY_HEALTH_KEY,
@@ -392,6 +392,47 @@ class CreateDemoOrderRequest(BaseModel):
     # receipt (see create_demo_order below), so it can't be used to
     # inject arbitrary content into a real API call.
     label: str = Field(default="live_demo", min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_\-]+$")
+
+
+# ---- Policy preview: the agent's rules applied to any documented error ----
+# The same classify -> select_action -> safety_check -> plan_execution the
+# live demo runs, on a hypothetical failure. No payment, no Razorpay call,
+# nothing sent; the landing page uses it to let visitors try the policy.
+limit_policy = Depends(access.rate_limit("policy", 60))
+PREVIEW_METHODS = ("card", "upi", "netbanking", "wallet")
+PREVIEW_AMOUNT = 1000   # the live demo's ₹10
+
+
+@app.get("/api/policy", dependencies=[limit_policy])
+def policy_reasons():
+    """Every documented Razorpay error_reason the agent recognises, with its category."""
+    return {
+        "reasons": [{"error_reason": r, "category": c.value} for r, c in sorted(ERROR_REASON_TO_CATEGORY.items())],
+        "methods": list(PREVIEW_METHODS),
+        "max_attempts": MAX_ATTEMPTS,
+    }
+
+
+@app.get("/api/policy/preview", dependencies=[limit_policy])
+def policy_preview(error_reason: str = Query(..., pattern=r"^[a-z_]{1,64}$"),
+                   method: str = Query("card", pattern=r"^(card|upi|netbanking|wallet)$")):
+    """What the agent would decide and do for a first failure with this error."""
+    failure_reason, raw = classify_real_payment_error({"error_code": "BAD_REQUEST_ERROR", "error_reason": error_reason})
+    state = _agent_state(failure_reason, attempt_count=0, payment_id="pay_preview", audit_trail=[])
+    state = select_recovery_action(state)
+    state = safety_check(state)
+    passed = not state["done"]
+    plan = plan_execution(state["action"], PREVIEW_AMOUNT, method) if passed else None
+    return {
+        "error_reason": error_reason,
+        "documented": error_reason in ERROR_REASON_TO_CATEGORY,
+        "category": failure_reason.value,
+        "action": state["action"].value,
+        "safety_check_passed": passed,
+        "gate": state["audit_trail"][-1].detail,
+        "plan": plan.to_dict() if plan else None,
+        "customer_message": plan.customer_message.replace("{link}", "<link>") if plan and plan.customer_message else None,
+    }
 
 
 @app.get("/api/live-demo/config")

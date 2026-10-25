@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../api.js'
 import { formatINR, humanize } from '../hooks/useShowcaseCase.js'
 import { loadCheckoutScript, TEST_CARD_SUCCESS, TEST_UPI_SUCCESS } from '../checkout.js'
+import CopyButton from './CopyButton.jsx'
 
 // Plain-language reasons for the customer (they never see internal codes).
 const CUSTOMER_REASON = {
@@ -176,8 +177,8 @@ function RecoverBody({ state, remaining, busy, notice, onPay }) {
       <div className="test-hint">
         <strong>Test mode:</strong>{' '}
         {card
-          ? <>pay with card <code>{TEST_CARD_SUCCESS.number}</code>, any future expiry and CVV, then {TEST_CARD_SUCCESS.bankPage}.</>
-          : <>card is hidden on this link. Choose UPI and enter <code>{TEST_UPI_SUCCESS}</code>, or netbanking with any bank and choose Success.</>}
+          ? <>pay with card <code>{TEST_CARD_SUCCESS.number}</code> <CopyButton value={TEST_CARD_SUCCESS.number} className="on-paper" />, any future expiry and CVV, then {TEST_CARD_SUCCESS.bankPage}.</>
+          : <>card is hidden on this link. Choose UPI and enter <code>{TEST_UPI_SUCCESS}</code> <CopyButton value={TEST_UPI_SUCCESS} className="on-paper" />, or netbanking with any bank and choose Success.</>}
       </div>
       <p className="pay-foot">Attempt {d.attempt} of {d.max_attempts} · Secured by Razorpay Checkout (test mode)</p>
     </div>

@@ -190,3 +190,4 @@ Sources (checked 2026-10-25):
 - Test cards and the error each produces: https://razorpay.com/docs/payments/payments/test-card-details/
   - Error cards fail only if you choose **Failure** on the mock bank page. Any future expiry, any CVV; OTP of 4–10 digits succeeds, fewer than 4 fails.
   - The page spells it `insufficient_fund`; the error list spells it `insufficient_funds`. Both are mapped.
+  - **Observed, 2026-10-25:** card `4100 2800 0009 0000` (listed as `payment_timed_out`) actually returns `error_reason: payment_failed`, `error_source: gateway`, `error_step: payment_authorization`. `classify_real_payment_error` therefore treats a generic `payment_failed` on a **card** at the **authorization** step as `card_declined` (raw code gets ` @ payment_authorization`); any other generic failure stays `unknown` → escalate. The policy preview has no step, so `payment_failed` previews as unknown.

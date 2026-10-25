@@ -3,8 +3,9 @@ import { render, screen } from '@testing-library/react'
 import { mockFetch } from '../test/mockFetch.js'
 import HeadlineMetrics from './HeadlineMetrics.jsx'
 
-// Show final values instead of animating from 0.
+// Show final values instead of animating from 0, as if already scrolled into view.
 vi.mock('../hooks/useCountUp.js', () => ({ useCountUp: (value) => value }))
+vi.mock('../hooks/useReveal.js', () => ({ useReveal: () => [{ current: null }, true] }))
 
 const EVALUATION = {
   seeds: { first: 1, last: 500, count: 500 },

@@ -32,6 +32,19 @@ def test_failure_is_executed_immediately(client):
     assert [e["step"] for e in view["audit_trail"]] == ["classify", "select_action", "safety_check", "execute"]
 
 
+def test_real_test_card_failure_gets_a_link_with_card_hidden(client):
+    """What Razorpay test mode really returns for the failing test card: the
+    generic payment_failed at the authorization step. The agent treats it as
+    a card decline and sends a link that hides card."""
+    create_order(client)
+    generic = payment("pay_fail", "order_A", "failed", error_code="BAD_REQUEST_ERROR",
+                      error_reason="payment_failed", error_source="gateway", error_step="payment_authorization")
+    view = report_failure(client, generic).json()
+    assert view["failure_reason"] == "card_declined"
+    assert view["recommended_action"] == "suggest_alternate_method"
+    assert view["current_request"]["excluded_method"] == "card"
+
+
 def test_token_never_appears_whole_in_the_audit_trail(client):
     token = awaiting(client)
     trail = session(client).json()["audit_trail"]

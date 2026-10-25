@@ -3,6 +3,7 @@ import Landing from './components/Landing.jsx'
 import Dashboard from './components/Dashboard.jsx'
 import LiveDemo from './components/LiveDemo.jsx'
 import RecoverPage from './components/RecoverPage.jsx'
+import LegalPage from './components/LegalPage.jsx'
 
 const RECOVER_PATH = /^\/recover\/(rr_[A-Za-z0-9_-]{20,64})$/
 
@@ -10,6 +11,7 @@ function pathToView(path) {
   if (path === '/demo') return 'demo'
   if (path === '/dashboard') return 'dashboard'
   if (RECOVER_PATH.test(path)) return 'recover'
+  if (path === '/legal') return 'legal'
   return 'landing'
 }
 
@@ -40,6 +42,7 @@ export default function App() {
     <>
       <a className="skip-link" href="#main">Skip to content</a>
       {view === 'recover' ? <RecoverPage token={window.location.pathname.match(RECOVER_PATH)[1]} />
+        : view === 'legal' ? <LegalPage navigate={navigate} />
         : view === 'demo' ? <LiveDemo navigate={navigate} />
         : view === 'dashboard' ? <Dashboard navigate={navigate} />
         : <Landing navigate={navigate} onEnterDemo={() => navigate('/demo')} onEnterDashboard={() => navigate('/dashboard')} />}

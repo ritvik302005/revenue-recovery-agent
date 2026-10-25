@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { humanize, formatINR, parseTimestamp } from '../hooks/useShowcaseCase.js'
 import { usePointerTilt } from '../hooks/usePointerTilt.js'
 
@@ -19,13 +20,25 @@ function recordedAt(iso) {
     .toUpperCase() + ' IST'
 }
 
+const PRINT_MS = 1500   // feed + stamp, matches the CSS timings
+
 export default function ReceiptPrinter({ showcase, onEnterDemo }) {
   const tiltRef = usePointerTilt()
   const { status, data, error } = showcase
-  // Re-printing only happens when a different case arrives.
-  const printKey = status === 'ready' && data.kind !== 'none'
+  const [reprints, setReprints] = useState(0)
+  const [printing, setPrinting] = useState(false)
+  // Re-printing happens when a different case arrives, or on Reprint.
+  const caseKey = status === 'ready' && data.kind !== 'none'
     ? `${data.kind}:${data.payment_id}:${data.recorded_at}`
     : `${status}:${data?.kind ?? ''}`
+  const printKey = `${caseKey}:${reprints}`
+
+  useEffect(() => {
+    if (status === 'loading') return
+    setPrinting(true)
+    const t = setTimeout(() => setPrinting(false), PRINT_MS)
+    return () => clearTimeout(t)
+  }, [printKey, status])
 
   return (
     <div className="printer-stage" ref={tiltRef}>
@@ -34,19 +47,28 @@ export default function ReceiptPrinter({ showcase, onEnterDemo }) {
           <div className="printer-top" />
           <div className="printer-front">
             <span className="printer-slot" />
-            <span className={`printer-led ${status === 'error' ? 'is-off' : ''}`} />
+            <span className="printer-brand">recover · thermal</span>
+            <span className={`printer-led ${status === 'error' ? 'is-off' : printing || status === 'loading' ? 'is-busy' : ''}`} />
           </div>
         </div>
         <div className="receipt-feed">
           {status !== 'loading' && (
-            <article key={printKey} className="receipt" aria-label="Recorded recovery case">
-              <ReceiptBody status={status} data={data} error={error} onEnterDemo={onEnterDemo} />
-              <div className="receipt-tear" aria-hidden="true" />
-            </article>
+            <div className="receipt-sway" key={printKey}>
+              <article className="receipt" aria-label="Recorded recovery case">
+                <ReceiptBody status={status} data={data} error={error} onEnterDemo={onEnterDemo} />
+                <div className="receipt-tear" aria-hidden="true" />
+              </article>
+            </div>
           )}
         </div>
+        <div className="printer-floor" aria-hidden="true" />
       </div>
       {status === 'loading' && <p className="printer-status">Loading the recorded case…</p>}
+      {status === 'ready' && data.kind !== 'none' && (
+        <button type="button" className="reprint" onClick={() => setReprints((n) => n + 1)} disabled={printing}>
+          Reprint
+        </button>
+      )}
     </div>
   )
 }
