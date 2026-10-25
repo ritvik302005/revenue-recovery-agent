@@ -22,6 +22,14 @@ def fixed_signing_secret(monkeypatch):
     monkeypatch.setattr(razorpay_client, "RAZORPAY_KEY_SECRET", TEST_KEY_SECRET)
 
 
+@pytest.fixture(autouse=True)
+def turnstile_off(monkeypatch):
+    """Tests never depend on backend/.env: the bot check is off unless a test turns it on."""
+    import turnstile
+    monkeypatch.setattr(turnstile, "TURNSTILE_SECRET_KEY", None)
+    monkeypatch.setattr(turnstile, "TURNSTILE_HOSTNAMES", set())
+
+
 def sign(order_id: str, payment_id: str) -> str:
     """The razorpay_signature Checkout would return for this order and
     payment, computed independently of the SDK."""
