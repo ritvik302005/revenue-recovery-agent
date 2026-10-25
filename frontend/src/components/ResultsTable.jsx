@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 
 function formatINR(paise) {
   return `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
@@ -15,7 +15,7 @@ export default function ResultsTable({ results }) {
         Batch Results &amp; Audit Trail
       </div>
       <p className="section-note">
-        Click a row to see the agent's full reasoning for that payment —
+        Click a row (or focus its payment id and press Enter) to see the agent's full reasoning for that payment —
         classification, action selection, safety-check, execution, and any
         replan/escalation.
       </p>
@@ -32,16 +32,25 @@ export default function ResultsTable({ results }) {
           </tr>
         </thead>
         <tbody>
-          {results.map((r) => (
-            <>
-              <tr
-                key={r.payment_id}
-                className="clickable"
-                onClick={() =>
-                  setExpandedId(expandedId === r.payment_id ? null : r.payment_id)
-                }
-              >
-                <td>{r.payment_id}</td>
+          {results.map((r) => {
+            const expanded = expandedId === r.payment_id
+            const toggle = () => setExpandedId(expanded ? null : r.payment_id)
+            const detailId = `audit-${r.payment_id}`
+            return (
+            <Fragment key={r.payment_id}>
+              <tr className="clickable" onClick={toggle}>
+                <td>
+                  {/* The keyboard and screen-reader control; the row click is a mouse shortcut. */}
+                  <button
+                    type="button"
+                    className="row-toggle"
+                    aria-expanded={expanded}
+                    aria-controls={detailId}
+                    onClick={(e) => { e.stopPropagation(); toggle() }}
+                  >
+                    <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {r.payment_id}
+                  </button>
+                </td>
                 <td>{formatINR(r.amount)}</td>
                 <td>{r.failure_reason.replace(/_/g, ' ')}</td>
                 <td>
@@ -63,8 +72,8 @@ export default function ResultsTable({ results }) {
                   </span>
                 </td>
               </tr>
-              {expandedId === r.payment_id && (
-                <tr>
+              {expanded && (
+                <tr id={detailId}>
                   <td colSpan={7}>
                     <div className="audit-panel">
                       {r.raw_error_code && (
@@ -89,8 +98,9 @@ export default function ResultsTable({ results }) {
                   </td>
                 </tr>
               )}
-            </>
-          ))}
+            </Fragment>
+            )
+          })}
         </tbody>
       </table>
     </div>

@@ -1,7 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import MetricsSection from './MetricsSection.jsx'
 import ResultsTable from './ResultsTable.jsx'
 import { apiFetch } from '../api.js'
+
+const MAX_BATCH_SIZE = 500        // backend: n ≤ 500
+const MAX_SEED = 2 ** 31 - 1      // backend: 0 ≤ seed ≤ 2^31 − 1
 
 // Says what the run actually was, not what it might have been.
 function describeRun(metrics) {
@@ -29,8 +32,36 @@ export default function Dashboard({ onBack }) {
   const [batchSize, setBatchSize] = useState(60)
   const [seed, setSeed] = useState(42)
   const [liveOrders, setLiveOrders] = useState(false)
+  const [checkedSaved, setCheckedSaved] = useState(false)
+
+  // Show the last saved batch on open, instead of an empty page until "Run Batch".
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/api/batch/results')
+      .then(async (saved) => {
+        if (cancelled || !saved.count) return
+        const savedMetrics = await apiFetch('/api/batch/metrics')
+        if (cancelled) return
+        setResults(saved.results)
+        setMetrics(savedMetrics)
+        if (saved.seed !== null) setSeed(saved.seed)
+        setBatchSize(saved.count)
+      })
+      .catch((e) => { if (!cancelled) setError(e.message) })
+      .finally(() => { if (!cancelled) setCheckedSaved(true) })
+    return () => { cancelled = true }
+  }, [])
 
   async function runBatch() {
+    // Same limits as POST /api/batch/run, so a typo doesn't become a 422.
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > MAX_BATCH_SIZE) {
+      setError(`Batch size must be a whole number from 1 to ${MAX_BATCH_SIZE}.`)
+      return
+    }
+    if (!Number.isInteger(seed) || seed < 0 || seed > MAX_SEED) {
+      setError(`Seed must be a whole number from 0 to ${MAX_SEED}.`)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -66,7 +97,8 @@ export default function Dashboard({ onBack }) {
             <input
               type="number"
               min={1}
-              max={200}
+              max={MAX_BATCH_SIZE}
+              step={1}
               value={batchSize}
               onChange={(e) => setBatchSize(Number(e.target.value))}
               style={{
@@ -80,6 +112,8 @@ export default function Dashboard({ onBack }) {
             <input
               type="number"
               min={0}
+              max={MAX_SEED}
+              step={1}
               value={seed}
               onChange={(e) => setSeed(Number(e.target.value))}
               style={{
@@ -104,7 +138,7 @@ export default function Dashboard({ onBack }) {
         </div>
       )}
 
-      {!metrics && !loading && (
+      {!metrics && !loading && checkedSaved && (
         <div className="empty-state">
           No batch run yet. Click "Run Batch" to generate a set of failed
           payments and let the agent classify, decide, and act on them.
