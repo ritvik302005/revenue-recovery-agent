@@ -14,9 +14,7 @@ from conftest import new_session_client
 ACTING = [
     ("post", "/api/live-demo/create-order", {"json": {"amount": 1000}}),
     ("post", "/api/live-demo/report-failure", {"params": {"order_id": "order_A", "payment_id": "pay_x"}}),
-    ("post", "/api/live-demo/create-recovery-order", {"params": {"order_id": "order_A"}}),
-    ("post", "/api/live-demo/report-recovery",
-     {"params": {"order_id": "order_A", "recovery_order_id": "order_R", "recovery_payment_id": "pay_x"}}),
+    ("get", "/api/live-demo/session", {"params": {"order_id": "order_A"}}),
     ("post", "/api/batch/run", {"params": {"n": 5}}),
 ]
 

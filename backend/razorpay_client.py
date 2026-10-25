@@ -23,6 +23,8 @@ IMPORTANT — what is real vs simulated here:
     is_simulated=True.
 """
 import functools
+import hashlib
+import hmac
 import logging
 import os
 from datetime import datetime, timezone
@@ -41,6 +43,8 @@ load_dotenv()  # reads backend/.env if present
 
 RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+# Set per webhook in the Razorpay Dashboard (test mode has its own); not the API secret.
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
 DEFAULT_TIMEOUT = 8  # seconds — fail fast rather than hanging a batch run
 
@@ -153,6 +157,20 @@ def fetch_real_payment(payment_id: str) -> dict:
     """
     client = get_client()
     return client.payment.fetch(payment_id)
+
+
+def webhook_configured() -> bool:
+    return bool(RAZORPAY_WEBHOOK_SECRET)
+
+
+def verify_webhook_signature(raw_body: bytes, signature: Optional[str]) -> bool:
+    """X-Razorpay-Signature: hex HMAC-SHA256 of the raw request body with
+    the webhook secret. Must be computed over the bytes exactly as received
+    (never re-serialised JSON); constant-time compare."""
+    if not RAZORPAY_WEBHOOK_SECRET or not signature:
+        return False
+    expected = hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
 
 
 def verify_checkout_signature(order_id: str, payment_id: str, signature: Optional[str]) -> bool:

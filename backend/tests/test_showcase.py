@@ -5,26 +5,22 @@ field must come from the run itself.
 """
 from unittest.mock import patch
 
-from conftest import sign
+from live_helpers import awaiting, pay_request, session, token_of
 
 
 def _live_flow(client, final_status="captured"):
-    order = {"id": "order_A", "amount": 1000, "currency": "INR", "status": "created"}
-    with patch("main.create_real_order", return_value=order):
-        client.post("/api/live-demo/create-order", json={"amount": 1000})
-    failed = {"id": "pay_fail", "order_id": "order_A", "amount": 1000, "currency": "INR",
-              "status": "failed", "error_code": "BAD_REQUEST_ERROR", "error_reason": "payment_timed_out"}
-    with patch("main.fetch_real_payment", return_value=failed):
-        client.post("/api/live-demo/report-failure", params={"order_id": "order_A", "payment_id": "pay_fail"})
-    with patch("main.create_real_order", return_value={**order, "id": "order_R1"}):
-        client.post("/api/live-demo/create-recovery-order", params={"order_id": "order_A"})
-    recovery = {"id": "pay_ok", "order_id": "order_R1", "amount": 1000, "currency": "INR", "status": final_status}
-    params = {"order_id": "order_A", "recovery_order_id": "order_R1", "recovery_payment_id": "pay_ok"}
+    """A recovered case, or ("failed") one that keeps failing until the
+    safety gate holds it."""
+    token = awaiting(client)
     if final_status == "captured":
-        params["razorpay_signature"] = sign("order_R1", "pay_ok")
-    with patch("main.fetch_real_payment", return_value=recovery):
-        r = client.post("/api/live-demo/report-recovery", params=params)
-    assert r.status_code == 200
+        assert pay_request(client, token, "order_R1", payment_id="pay_ok").status_code == 200
+        return
+    n = 1
+    while token:
+        assert pay_request(client, token, f"order_R{n}", status="failed").status_code == 200
+        view = session(client).json()
+        token = token_of(view) if view["current_request"] else None
+        n += 1
 
 
 def test_empty_state_before_anything_has_run(client):
@@ -62,11 +58,13 @@ def test_live_case_takes_priority_and_carries_the_real_ids(client):
     assert case["recorded_at"] == case["audit_trail"][-1]["timestamp"]
 
 
-def test_failed_recovery_is_recorded_too(client):
+def test_unrecovered_case_is_recorded_too(client):
     _live_flow(client, final_status="failed")
     case = client.get("/api/showcase/case").json()
     assert case["kind"] == "live_demo"
-    assert case["outcome"] == "still_failed"
+    assert case["stage"] == "held"
+    assert case["outcome"] == "held_no_action"
+    assert case["attempts"] == 3
     assert case["amount_recovered"] == 0
 
 

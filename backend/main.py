@@ -9,21 +9,31 @@ Endpoints (full table in docs/ARCHITECTURE.md):
   GET  /api/evaluation      - the published multi-seed evaluation
   GET  /api/showcase/case   - one real recorded case for the landing page
   GET  /api/health          - basic health check
-  /api/live-demo/*          - the real Razorpay Test Mode flow
+  /api/live-demo/*          - the real Razorpay Test Mode flow (operator side)
+  /api/recover/{token}      - the customer's recovery request (P7)
+  POST /api/webhooks/razorpay - signed Razorpay events
 """
-from fastapi import FastAPI, Query, HTTPException, Depends
+from fastapi import FastAPI, Query, Path, HTTPException, Depends, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timezone
 from typing import Optional
 import json
+import math
 import os
+import secrets
+import time
 
-from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult, LiveDemoStage, FailureReason
+from models import (RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult, LiveDemoStage,
+                    FailureReason, RecoveryAction)
 from simulate_batch import generate_batch, MAX_LIVE_ORDERS_PER_BATCH
-from recovery_agent import run_recovery, select_recovery_action, safety_check, AgentState, MAX_ATTEMPTS
+from recovery_agent import run_recovery, select_recovery_action, safety_check, next_action, AgentState, MAX_ATTEMPTS
+from executor import plan_execution, MERCHANT_NAME, RECOVERY_REQUEST_TTL_SECONDS
 from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
     create_real_order, fetch_real_payment, classify_real_payment_error,
-    verify_checkout_signature, RazorpayNotConfigured,
+    verify_checkout_signature, verify_webhook_signature, RazorpayNotConfigured,
+    webhook_configured as razorpay_webhook_configured,
     key_mode as razorpay_key_mode, HEALTH_KEY as RAZORPAY_HEALTH_KEY,
 )
 from pydantic import BaseModel, Field, ValidationError
@@ -278,8 +288,10 @@ def _record_showcase(order_id: str, record: dict) -> None:
         "action": record.get("recommended_action"),
         "safety_check_passed": record.get("safety_check_passed"),
         "stage": record.get("stage"),
-        "outcome": result.get("recovery_outcome") or (Outcome.HELD_NO_ACTION.value
-                                                      if record.get("stage") == LiveDemoStage.HELD.value else None),
+        "outcome": result.get("recovery_outcome") or {
+            LiveDemoStage.HELD.value: Outcome.HELD_NO_ACTION.value,
+            LiveDemoStage.ESCALATED.value: Outcome.PENDING_CUSTOMER_ACTION.value,
+        }.get(record.get("stage")),
         "attempts": record.get("recovery_attempts", 0),
         "amount_recovered": result.get("amount_recovered", 0),
         "outcome_is_simulated": False,
@@ -400,253 +412,475 @@ def create_demo_order(req: CreateDemoOrderRequest, token: str = Depends(access.r
     return order
 
 
+# ---- Live demo: failure -> decision -> execution -> customer -> verification (P7) ----
+#
+# A session is one live-demo order (key live_demo:<order_id>). After a real
+# failure the agent decides and the executor acts at once: it opens a
+# recovery request for the customer (now, after a delay, or with the failed
+# method hidden), posts the message the customer would get to the demo
+# outbox, or opens a support case. The customer pays on /recover/<token>
+# (a page that needs only the token); the result is verified with Razorpay,
+# from Checkout's report or a signed webhook, whichever arrives first. All
+# of a session's state, its requests included, lives in its one record, so
+# every change is one atomic update.
+
+RECOVERY_TOKEN_PATTERN = r"^rr_[A-Za-z0-9_-]{20,64}$"
+RECOVERY_TOKEN_PREFIX = "recovery_token:"     # token -> {"order_id": session order}
+RECOVERY_ORDER_PREFIX = "recovery_order:"     # Razorpay recovery order id -> {"token": ...}
+FINAL_STAGES = {LiveDemoStage.RECOVERED.value, LiveDemoStage.ESCALATED.value, LiveDemoStage.HELD.value}
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+
+
+def _audit(payment_id: str, step: str, detail: str, data: Optional[dict] = None) -> dict:
+    return AuditLogEntry(payment_id=payment_id, step=step, detail=detail, data=data).model_dump(mode="json")
+
+
+def _short(token: str) -> str:
+    """Tokens are the customer's access: never put a whole one in the audit trail."""
+    return token[:9] + "…"
+
+
+def _execute(record: dict, action: RecoveryAction, now: float) -> dict:
+    """Carry out an approved action on a session record. Runs inside the
+    storage lock; returns the fields to change."""
+    attempt = record.get("recovery_attempts", 0) + 1
+    plan = plan_execution(action, record["amount"], record.get("failed_method"))
+    pid = record["original_payment_id"]
+    trail = list(record.get("audit_trail", []))
+    updates = {"recommended_action": action.value, "recovery_attempts": attempt, "current_request": None}
+
+    if plan.kind == "support_case":
+        case = {"id": f"case_{secrets.token_hex(5)}", "opened_at": _iso(now), "attempt": attempt,
+                "failure_reason": record["failure_reason"],
+                "note": "A support agent contacts the customer; the agent sends no payment request."}
+        trail.append(_audit(pid, "execute", f"Attempt {attempt} of {MAX_ATTEMPTS}: {plan.summary} "
+                                            f"Case {case['id']}.", data={"plan": plan.to_dict()}))
+        updates.update(stage=LiveDemoStage.ESCALATED.value, support_case=case)
+    else:
+        token = "rr_" + secrets.token_urlsafe(24)
+        link = f"/recover/{token}"
+        request = {"token": token, "action": action.value, "attempt": attempt, "created_at": now,
+                   "available_at": now + plan.delay_seconds,
+                   "expires_at": now + plan.delay_seconds + RECOVERY_REQUEST_TTL_SECONDS,
+                   "excluded_method": plan.excluded_method, "status": "open", "razorpay_order_id": None}
+        message = {"at": _iso(now), "attempt": attempt, "action": action.value, "link": link,
+                   "text": plan.customer_message.replace("{link}", link),
+                   "channel": "SMS / email in production; shown in the demo outbox here"}
+        trail.append(_audit(pid, "execute", f"Attempt {attempt} of {MAX_ATTEMPTS}: {plan.summary} "
+                                            f"Request {_short(token)}.",
+                            data={"plan": plan.to_dict()}))
+        updates.update(stage=LiveDemoStage.AWAITING_CUSTOMER.value, current_request=token,
+                       requests={**record.get("requests", {}), token: request},
+                       outbox=list(record.get("outbox", [])) + [message])
+    updates["audit_trail"] = trail
+    return updates
+
+
+def _after_failed_attempt(record: dict, now: float, why: str) -> dict:
+    """A recovery request failed or went unpaid: re-plan to the next action
+    and run it past the safety gate (which stops at MAX_ATTEMPTS)."""
+    attempts = record.get("recovery_attempts", 0)
+    current = RecoveryAction(record["recommended_action"])
+    nxt = next_action(current)
+    pid = record["original_payment_id"]
+    trail = list(record.get("audit_trail", [])) + [
+        _audit(pid, "replan", f"Attempt {attempts} failed ({why}). Escalating from "
+                              f"'{current.value}' to '{nxt.value}'.")]
+    gate = safety_check(_agent_state(FailureReason(record["failure_reason"]), attempts, pid, []))
+    trail.append(gate["audit_trail"][-1].model_dump(mode="json"))
+    if gate["done"]:
+        return {"stage": LiveDemoStage.HELD.value, "current_request": None, "audit_trail": trail}
+    return _execute({**record, "audit_trail": trail}, nxt, now)
+
+
+def _store_tokens(record: dict, order_id: str) -> None:
+    token = record.get("current_request")
+    if token:
+        storage.set_value(RECOVERY_TOKEN_PREFIX + token, {"order_id": order_id},
+                          ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+
+
+def _finish(order_id: str, record: dict) -> dict:
+    """Side effects after a stored change: token index, showcase."""
+    _store_tokens(record, order_id)
+    if record.get("stage") in FINAL_STAGES:
+        _record_showcase(order_id, record)
+    return record
+
+
+def _validate_failed_payment(payment: dict, order_id: str, record: dict) -> None:
+    """Never trust a reported pairing: Razorpay's own payment record must
+    belong to this order, match the amount and currency, and have failed."""
+    payment_id = payment.get("id")
+    if payment.get("order_id") != order_id:
+        raise HTTPException(status_code=400, detail=f"Payment {payment_id} belongs to Razorpay order "
+                                                    f"'{payment.get('order_id')}', not the claimed order_id '{order_id}'.")
+    if payment.get("amount") != record.get("amount"):
+        raise HTTPException(status_code=400, detail=f"Payment amount ({payment.get('amount')}) does not match the "
+                                                    f"order's expected amount ({record.get('amount')}).")
+    if payment.get("currency") != "INR":
+        raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
+    status = payment.get("status")
+    if status in ("created", "authorized"):
+        raise HTTPException(status_code=409, detail=f"Payment {payment_id} is '{status}', not final yet. "
+                                                    f"Report it once it has failed.")
+    if status != "failed":
+        raise HTTPException(status_code=400, detail=f"Payment {payment_id} is '{status}', not failed; "
+                                                    f"only a failed payment starts a recovery.")
+
+
+def _record_failure(order_id: str, payment: dict, source: str) -> dict:
+    """Classify a real failed payment, decide, gate and execute. `source`
+    is "checkout" (the browser reported it) or "webhook" (Razorpay did)."""
+    failure_reason, raw_error_code = classify_real_payment_error(payment)
+    payment_id = payment["id"]
+    audit_trail = [AuditLogEntry(
+        payment_id=payment_id, step="classify",
+        detail=f"Fetched real payment {payment_id} from Razorpay ({source}). error_reason="
+               f"'{payment.get('error_reason')}' mapped to '{failure_reason.value}' (method: {payment.get('method')}).")]
+    state = _agent_state(failure_reason, attempt_count=0, payment_id=payment_id, audit_trail=audit_trail)
+    state = select_recovery_action(state)
+    state = safety_check(state)
+    safety_passed = not state["done"]
+    now = time.time()
+
+    def update(record):
+        base = {**record, "original_payment_id": payment_id, "failure_reason": failure_reason.value,
+                "raw_error_code": raw_error_code, "failed_method": payment.get("method"),
+                "recommended_action": state["action"].value, "safety_check_passed": safety_passed,
+                "recovery_attempts": 0, "audit_trail": [e.model_dump(mode="json") for e in state["audit_trail"]]}
+        if not safety_passed:
+            return {**base, "stage": LiveDemoStage.HELD.value}
+        return {**base, **_execute(base, state["action"], now)}
+
+    stored = _transition(order_id, {LiveDemoStage.ORDER_CREATED}, update)
+    return _finish(order_id, stored)
+
+
+def _expire_if_due(order_id: str) -> Optional[dict]:
+    """Lazily treat an unpaid, expired request as a failed attempt."""
+    now = time.time()
+
+    def apply(record):
+        if not record or record.get("stage") != LiveDemoStage.AWAITING_CUSTOMER.value:
+            raise _NothingToDo()
+        token = record["current_request"]
+        request = record["requests"][token]
+        if request["expires_at"] > now:
+            raise _NothingToDo()
+        requests = {**record["requests"], token: {**request, "status": "expired"}}
+        record = {**record, "requests": requests}
+        return {**record, **_after_failed_attempt(record, now, "the customer didn't pay before the request expired")}
+
+    try:
+        stored = storage.update_atomic(LIVE_DEMO_KEY_PREFIX + order_id, apply, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+    except _NothingToDo:
+        return None
+    return _finish(order_id, stored)
+
+
+class _NothingToDo(Exception):
+    """Aborts an atomic update without writing."""
+
+
+def _request_view(record: dict, token: str, now: float, include_link: bool) -> dict:
+    request = record["requests"][token]
+    status = request["status"]
+    if status == "open" and record.get("current_request") != token:
+        status = "superseded"
+    wait = max(0, math.ceil(request["available_at"] - now))
+    if status == "open" and wait > 0:
+        status = "scheduled"
+    view = {
+        "status": status, "action": request["action"], "attempt": request["attempt"], "max_attempts": MAX_ATTEMPTS,
+        "seconds_until_available": wait, "available_at": _iso(request["available_at"]),
+        "expires_at": _iso(request["expires_at"]), "excluded_method": request["excluded_method"],
+        "has_order": request["razorpay_order_id"] is not None,
+    }
+    if include_link:
+        view["link"] = f"/recover/{token}"
+    return view
+
+
+def _operator_view(order_id: str, record: dict) -> dict:
+    now = time.time()
+    token = record.get("current_request")
+    result = record.get("result")
+    return {
+        "order_id": order_id, "stage": record["stage"], "amount": record["amount"],
+        "failure_reason": record.get("failure_reason"), "raw_error_code": record.get("raw_error_code"),
+        "failed_method": record.get("failed_method"), "recommended_action": record.get("recommended_action"),
+        "safety_check_passed": record.get("safety_check_passed"),
+        "recovery_attempts": record.get("recovery_attempts", 0), "max_attempts": MAX_ATTEMPTS,
+        "current_request": _request_view(record, token, now, include_link=True) if token else None,
+        "outbox": record.get("outbox", []), "support_case": record.get("support_case"),
+        "result": result, "audit_trail": record.get("audit_trail", []),
+    }
+
+
 @app.post("/api/live-demo/report-failure", dependencies=[limit_reports])
 def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
                    payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN),
                    token: str = Depends(access.require_session)):
-    """
-    Called after the user completes Checkout with a FAILING test
-    instrument. Fetches the REAL payment object from Razorpay, maps
-    its real error_reason to our taxonomy, then runs the agent's
-    classify -> select_action -> safety_check nodes (not execute —
-    the actual recovery attempt happens via a second real Checkout,
-    see /report-recovery).
-    """
-    # Fast check before calling Razorpay; re-checked atomically when the
-    # stage is written below, so a replay can't slip in between.
+    """The browser reports a failed Checkout payment. The server fetches the
+    real payment from Razorpay, then the agent classifies, decides, gates and
+    executes. (A signed payment.failed webhook does the same without the browser.)"""
+    # Fast check before calling Razorpay; re-checked atomically when written.
     order_record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.ORDER_CREATED})
     _require_owner(order_record, token, order_id)
-
     try:
         payment = fetch_real_payment(payment_id)
     except Exception as e:
         raise _razorpay_error("fetch the real payment from Razorpay", e)
+    _validate_failed_payment(payment, order_id, order_record)
+    return _operator_view(order_id, _record_failure(order_id, payment, "checkout"))
 
-    # Ownership/amount/currency checks — never trust the caller's
-    # order_id/payment_id pairing without verifying Razorpay's own
-    # payment record actually belongs to that order and amount.
-    if payment.get("order_id") != order_id:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Payment {payment_id} belongs to Razorpay order "
-                   f"'{payment.get('order_id')}', not the claimed order_id '{order_id}'.",
-        )
-    if payment.get("amount") != order_record.get("amount"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Payment amount ({payment.get('amount')}) does not match the "
-                   f"order's expected amount ({order_record.get('amount')}).",
-        )
-    if payment.get("currency") != "INR":
-        raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
 
-    # Only a payment Razorpay itself reports as failed starts a recovery.
-    status = payment.get("status")
-    if status in ("created", "authorized"):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Payment {payment_id} is '{status}', not final yet. Report it once it has failed.",
-        )
-    if status != "failed":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Payment {payment_id} is '{status}', not failed; only a failed payment starts a recovery.",
-        )
+@app.get("/api/live-demo/session", dependencies=[limit_reports])
+def live_demo_session(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
+                      token: str = Depends(access.require_session)):
+    """The operator's view of a session: stage, what the agent executed,
+    the outbox, the support case and the verified result. Polled while the
+    customer has the recovery request."""
+    record = _get_demo_record(order_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Unknown order_id '{order_id}'.")
+    _require_owner(record, token, order_id)
+    record = _expire_if_due(order_id) or record
+    return _operator_view(order_id, record)
 
-    failure_reason, raw_error_code = classify_real_payment_error(payment)
 
-    audit_trail = [
-        AuditLogEntry(payment_id=payment_id, step="classify",
-                      detail=f"Fetched real payment {payment_id} from Razorpay. "
-                             f"error_reason='{payment.get('error_reason')}' mapped to "
-                             f"'{failure_reason.value}'.")
-    ]
+# ---- The customer's side: /recover/<token> ----
 
-    # Reuse the same select_recovery_action / safety_check nodes the
-    # batch agent uses, on a minimal state.
-    state = _agent_state(failure_reason, attempt_count=0, payment_id=payment_id, audit_trail=audit_trail)
-    state = select_recovery_action(state)
-    state = safety_check(state)
+def _load_request(token: str) -> tuple[str, dict]:
+    index = storage.get_value(RECOVERY_TOKEN_PREFIX + token)
+    record = _get_demo_record(index["order_id"]) if index else None
+    if not record or token not in record.get("requests", {}):
+        raise HTTPException(status_code=404, detail="This recovery link doesn't exist or has expired.")
+    return index["order_id"], record
 
-    safety_passed = not state["done"]
-    stored = _transition(order_id, {LiveDemoStage.ORDER_CREATED}, lambda record: {
-        "original_payment_id": payment_id,
-        "failure_reason": failure_reason,
-        "raw_error_code": raw_error_code,
-        "recommended_action": state["action"],
-        "safety_check_passed": safety_passed,
-        "stage": (LiveDemoStage.FAILURE_RECORDED if safety_passed else LiveDemoStage.HELD).value,
-        "audit_trail": [e.model_dump(mode="json") for e in state["audit_trail"]],
-    })
-    if not safety_passed:
-        _record_showcase(order_id, stored)   # held by the safety gate: a finished case
 
+def _checkout_config(excluded_method: Optional[str]) -> Optional[dict]:
+    """Razorpay Checkout display config that hides the failed method."""
+    if not excluded_method:
+        return None
+    return {"display": {"hide": [{"method": excluded_method}], "preferences": {"show_default_blocks": True}}}
+
+
+def _customer_view(record: dict, token: str) -> dict:
+    now = time.time()
+    request = record["requests"][token]
+    view = _request_view(record, token, now, include_link=False)
+    if record.get("stage") == LiveDemoStage.ESCALATED.value and view["status"] in ("superseded", "failed"):
+        view["status"] = "escalated"
     return {
-        "failure_reason": failure_reason.value,
-        "raw_error_code": raw_error_code,
-        "recommended_action": state["action"].value,
-        "safety_check_passed": safety_passed,
-        "stage": (LiveDemoStage.FAILURE_RECORDED if safety_passed else LiveDemoStage.HELD).value,
-        "audit_trail": [a.model_dump(mode="json") for a in state["audit_trail"]],
+        **view, "merchant": MERCHANT_NAME, "amount": record["amount"], "currency": "INR",
+        "failure_reason": record.get("failure_reason"), "key_id": RAZORPAY_KEY_ID,
+        "order": ({"id": request["razorpay_order_id"], "amount": record["amount"], "currency": "INR"}
+                  if request["razorpay_order_id"] and view["status"] == "open" else None),
+        "checkout_config": _checkout_config(request["excluded_method"]),
+        "amount_recovered": (record.get("result") or {}).get("amount_recovered", 0) if view["status"] == "paid" else 0,
     }
 
 
-@app.post("/api/live-demo/create-recovery-order", dependencies=[limit_orders])
-def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
-                          token: str = Depends(access.require_session)):
-    """
-    Creates the recovery order for a recorded failure — server-side, for
-    the original amount — and binds it to the session. report-recovery
-    only accepts a payment on exactly this order, so the browser can't
-    pick an unrelated (or the original) order as the "recovery".
-    """
-    retryable = {LiveDemoStage.FAILURE_RECORDED, LiveDemoStage.RECOVERY_FAILED}
-    record = _require_stage(_get_demo_record(order_id), order_id, retryable)
-    _require_owner(record, token, order_id)
+@app.get("/api/recover/{token}", dependencies=[limit_reports])
+def recovery_request(token: str = Path(..., pattern=RECOVERY_TOKEN_PATTERN)):
+    """What the customer sees. The token is their only access."""
+    order_id, _ = _load_request(token)
+    _expire_if_due(order_id)
+    _, record = _load_request(token)
+    return _customer_view(record, token)
 
-    # The same hard safety gate the batch agent uses, with the recovery
-    # attempts made so far: once MAX_ATTEMPTS are used, no new order.
-    attempts = record.get("recovery_attempts", 0)
-    gate = safety_check(_agent_state(FailureReason(record["failure_reason"]), attempts,
-                                     record["original_payment_id"], []))
-    if gate["done"]:
-        blocked = gate["audit_trail"][-1].model_dump(mode="json")
-        stored = _transition(order_id, retryable, lambda record: {
-            "stage": LiveDemoStage.HELD.value,
-            "audit_trail": record.get("audit_trail", []) + [blocked],
-        })
-        _record_showcase(order_id, stored)
-        raise HTTPException(
-            status_code=409,
-            detail=f"Safety gate blocked another recovery attempt: {attempts} of {MAX_ATTEMPTS} attempts used.",
-        )
 
-    access.require_orders(token)
-    receipt = f"live_recovery_{uuid.uuid4().hex[:16]}"
+@app.post("/api/recover/{token}/order", dependencies=[limit_orders])
+def recovery_order(token: str = Path(..., pattern=RECOVERY_TOKEN_PATTERN)):
+    """Create (once) the real Razorpay order the customer pays this request
+    with. Counts against the demo session's order budget and the daily cap."""
+    order_id, record = _load_request(token)
+    _expire_if_due(order_id)
+    order_id, record = _load_request(token)
+    view = _customer_view(record, token)
+    if view["status"] == "scheduled":
+        raise HTTPException(status_code=409, detail=f"Not yet: this payment opens in {view['seconds_until_available']} s.")
+    if view["status"] != "open":
+        raise HTTPException(status_code=409, detail="This recovery link is no longer active.")
+    request = record["requests"][token]
+    if request["razorpay_order_id"]:
+        return {"order": view["order"], "checkout_config": view["checkout_config"]}
+
+    owner = record["owner"]
     try:
-        order = create_real_order(amount=record["amount"], receipt=receipt)
+        access.require_orders_for_owner(owner)
+    except HTTPException as e:
+        if e.status_code == 401:
+            raise HTTPException(status_code=410, detail="This recovery link has expired.")
+        raise
+    try:
+        order = create_real_order(amount=record["amount"], receipt=f"recovery_{secrets.token_hex(8)}")
     except Exception as e:
-        access.refund_orders(token, 1)
-        raise _razorpay_error("create a real Razorpay recovery order", e)
+        access.refund_orders_for_owner(owner, 1)
+        raise _razorpay_error("create the recovery order", e)
 
-    _transition(order_id, retryable, lambda record: {
-        "stage": LiveDemoStage.RECOVERY_ORDER_CREATED.value,
-        "current_recovery_order_id": order["id"],
-        "audit_trail": record.get("audit_trail", []) + [
-            AuditLogEntry(payment_id=record["original_payment_id"], step="execute",
-                          detail=f"Recovery attempt {attempts + 1} of {MAX_ATTEMPTS}: created order "
-                                 f"{order['id']} for the original amount ({record['amount']} paise)."
-                          ).model_dump(mode="json")
-        ],
-    })
-    return order
+    created = {"won": False}
 
-
-@app.post("/api/live-demo/report-recovery", dependencies=[limit_reports])
-def report_recovery(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
-                    recovery_payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN),
-                    recovery_order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
-                    razorpay_signature: Optional[str] = Query(None, max_length=128),
-                    token: str = Depends(access.require_session)):
-    """
-    Called after the user completes the recovery Checkout on the order
-    from /create-recovery-order. Fetches the real payment status — this
-    is a genuinely real outcome, not simulated.
-
-    A captured payment also needs the razorpay_signature Checkout returned
-    on success. A failed attempt has no signature (Razorpay's
-    payment.failed event doesn't carry one) and is recorded from the
-    fetched status alone.
-    """
-    record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED})
-    _require_owner(record, token, order_id)
-    if recovery_order_id != record.get("current_recovery_order_id") or recovery_order_id == order_id:
-        raise HTTPException(
-            status_code=400,
-            detail=f"'{recovery_order_id}' is not the recovery order created for order '{order_id}'. "
-                   f"Use the order returned by /create-recovery-order.",
-        )
+    def bind(current):
+        current = _require_stage(current, order_id, {LiveDemoStage.AWAITING_CUSTOMER})
+        req = current["requests"][token]
+        if current.get("current_request") != token or req["razorpay_order_id"]:
+            raise _NothingToDo()
+        created["won"] = True
+        return {**current, "requests": {**current["requests"], token: {**req, "razorpay_order_id": order["id"]}}}
 
     try:
-        payment = fetch_real_payment(recovery_payment_id)
-    except Exception as e:
-        raise _razorpay_error("fetch the real recovery payment from Razorpay", e)
+        record = storage.update_atomic(LIVE_DEMO_KEY_PREFIX + order_id, bind, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+    except _NothingToDo:
+        access.refund_orders_for_owner(owner, 1)    # lost a race: another request bound its order first
+        record = _get_demo_record(order_id)
+    if created["won"]:
+        storage.set_value(RECOVERY_ORDER_PREFIX + order["id"], {"token": token}, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+    view = _customer_view(record, token)
+    if not view["order"]:
+        raise HTTPException(status_code=409, detail="This recovery link is no longer active.")
+    return {"order": view["order"], "checkout_config": view["checkout_config"]}
 
-    # Ownership/amount/currency checks — a captured payment only
-    # counts as a recovery if it's genuinely the recovery order's own
-    # payment, for the same amount and currency as the original.
-    if payment.get("order_id") != recovery_order_id:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Payment {recovery_payment_id} belongs to Razorpay order "
-                   f"'{payment.get('order_id')}', not the claimed recovery_order_id "
-                   f"'{recovery_order_id}'.",
-        )
+
+def _settle(token: str, payment: dict, source: str, signature_ok: bool = False) -> dict:
+    """Record the outcome of the customer's payment on a recovery request.
+    `source` is "checkout" (needs Checkout's signature for a capture) or
+    "webhook" (already verified by the webhook signature)."""
+    order_id, record = _load_request(token)
+    request = record["requests"][token]
+    payment_id = payment.get("id")
+    if not request["razorpay_order_id"] or payment.get("order_id") != request["razorpay_order_id"]:
+        raise HTTPException(status_code=400, detail=f"Payment {payment_id} belongs to Razorpay order "
+                                                    f"'{payment.get('order_id')}', not this recovery request's order.")
     if payment.get("amount") != record.get("amount"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Recovery payment amount ({payment.get('amount')}) does not match "
-                   f"the original amount ({record.get('amount')}).",
-        )
+        raise HTTPException(status_code=400, detail=f"Recovery payment amount ({payment.get('amount')}) does not "
+                                                    f"match the original amount ({record.get('amount')}).")
     if payment.get("currency") != "INR":
         raise HTTPException(status_code=400, detail=f"Unexpected currency '{payment.get('currency')}' — expected INR.")
+    status = payment.get("status")
+    if status not in ("captured", "failed"):
+        raise HTTPException(status_code=409, detail=f"Recovery payment {payment_id} is '{status}', not final yet. "
+                                                    f"Try again shortly.")
+    recovered = status == "captured"
+    if recovered and source == "checkout" and not signature_ok:
+        raise HTTPException(status_code=400, detail="Missing or invalid razorpay_signature for this recovery "
+                                                    "payment; a recovery is only recorded with Checkout's signed "
+                                                    "success response.")
+    now = time.time()
 
-    real_status = payment.get("status")  # "captured" = success in Razorpay test mode
-    if real_status not in ("captured", "failed"):
-        # e.g. "created"/"authorized": not final yet. Don't record an
-        # outcome (or use up the attempt) on a payment still in flight.
-        raise HTTPException(
-            status_code=409,
-            detail=f"Recovery payment {recovery_payment_id} is '{real_status}', not final yet. Try again shortly.",
-        )
-    recovered = real_status == "captured"
-    if recovered and not verify_checkout_signature(recovery_order_id, recovery_payment_id, razorpay_signature):
-        raise HTTPException(
-            status_code=400,
-            detail="Missing or invalid razorpay_signature for this recovery payment; "
-                   "a recovery is only recorded with Checkout's signed success response.",
-        )
-
-    outcome = Outcome.RECOVERED if recovered else Outcome.STILL_FAILED
-    amount_recovered = payment.get("amount", 0) if recovered else 0
-
-    def record_outcome(record: dict) -> dict:
-        # Re-checked under the storage lock: still the same recovery order.
-        if record.get("current_recovery_order_id") != recovery_order_id:
-            raise HTTPException(status_code=409, detail="The recovery order for this session changed; reload and retry.")
-        audit_trail = list(record.get("audit_trail", [])) + [
-            AuditLogEntry(
-                payment_id=recovery_payment_id, step="execute",
-                detail=f"Real recovery Checkout attempt completed on order {recovery_order_id}. "
-                       f"Razorpay payment status='{real_status}'. Outcome: {outcome.value}.",
-            ).model_dump(mode="json")
-        ]
+    def apply(current):
+        current = _require_stage(current, order_id, {LiveDemoStage.AWAITING_CUSTOMER})
+        req = current["requests"].get(token)
+        # Re-checked under the lock: still this request, still its order, not settled.
+        if current.get("current_request") != token or not req or req["razorpay_order_id"] != payment.get("order_id") \
+                or req["status"] != "open":
+            raise HTTPException(status_code=409, detail="This recovery request has already been settled or replaced.")
+        requests = {**current["requests"], token: {**req, "status": "paid" if recovered else "failed",
+                                                   "payment_id": payment_id}}
+        trail = list(current.get("audit_trail", [])) + [_audit(
+            payment_id, "execute",
+            f"Customer paid recovery request {_short(token)} on order {req['razorpay_order_id']}: Razorpay "
+            f"status '{status}' ({'Checkout report + signature' if source == 'checkout' else 'signed webhook'}).")]
+        current = {**current, "requests": requests, "audit_trail": trail}
+        if not recovered:
+            return {**current, **_after_failed_attempt(current, now, "the customer's payment failed")}
         result = LiveDemoResult(
-            original_order_id=order_id,
-            original_payment_id=record["original_payment_id"],
-            recovery_order_id=recovery_order_id,
-            recovery_payment_id=recovery_payment_id,
-            amount=record["amount"],
-            failure_reason=record["failure_reason"],
-            raw_error_code=record["raw_error_code"],
-            recommended_action=record["recommended_action"],
-            safety_check_passed=record["safety_check_passed"],
-            recovery_outcome=outcome,
-            outcome_is_simulated=False,
-            amount_recovered=amount_recovered,
-            audit_trail=audit_trail,
-        )
-        return {
-            "stage": (LiveDemoStage.RECOVERED if recovered else LiveDemoStage.RECOVERY_FAILED).value,
-            "recovery_attempts": record.get("recovery_attempts", 0) + 1,
-            "audit_trail": audit_trail,
-            "result": result.model_dump(mode="json"),
-        }
+            original_order_id=order_id, original_payment_id=current["original_payment_id"],
+            recovery_order_id=req["razorpay_order_id"], recovery_payment_id=payment_id,
+            amount=current["amount"], failure_reason=current["failure_reason"],
+            raw_error_code=current["raw_error_code"], recommended_action=current["recommended_action"],
+            safety_check_passed=current["safety_check_passed"], recovery_outcome=Outcome.RECOVERED,
+            outcome_is_simulated=False, amount_recovered=payment.get("amount", 0), audit_trail=trail)
+        return {**current, "stage": LiveDemoStage.RECOVERED.value, "current_request": None,
+                "result": result.model_dump(mode="json")}
 
-    stored = _transition(order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED}, record_outcome)
-    _record_showcase(order_id, stored)
-    return {**stored["result"], "stage": stored["stage"],
-            "recovery_attempts": stored["recovery_attempts"], "max_attempts": MAX_ATTEMPTS}
+    stored = storage.update_atomic(LIVE_DEMO_KEY_PREFIX + order_id, apply, ttl_seconds=storage.LIVE_DEMO_TTL_SECONDS)
+    return _finish(order_id, stored)
+
+
+@app.post("/api/recover/{token}/report", dependencies=[limit_reports])
+def recovery_report(token: str = Path(..., pattern=RECOVERY_TOKEN_PATTERN),
+                    payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN),
+                    razorpay_signature: Optional[str] = Query(None, max_length=128)):
+    """The customer's Checkout finished. The server fetches the payment from
+    Razorpay; a capture also needs Checkout's signature for this order."""
+    order_id, record = _load_request(token)
+    request = record["requests"][token]
+    if not request["razorpay_order_id"]:
+        raise HTTPException(status_code=409, detail="No payment has been started on this recovery link.")
+    try:
+        payment = fetch_real_payment(payment_id)
+    except Exception as e:
+        raise _razorpay_error("fetch the recovery payment from Razorpay", e)
+    signature_ok = verify_checkout_signature(request["razorpay_order_id"], payment_id, razorpay_signature)
+    record = _settle(token, payment, "checkout", signature_ok)
+    return _customer_view(record, token)
+
+
+# ---- Razorpay webhooks ----
+
+WEBHOOK_EVENT_PREFIX = "webhook_event:"
+
+
+def _handle_webhook_event(event: dict) -> str:
+    name = event.get("event")
+    payment = ((event.get("payload") or {}).get("payment") or {}).get("entity") or {}
+    order_id = payment.get("order_id")
+    if name not in ("payment.failed", "payment.captured", "order.paid") or not order_id:
+        return "ignored"
+    rr = storage.get_value(RECOVERY_ORDER_PREFIX + order_id)
+    try:
+        if rr:                                                 # a payment on a recovery request
+            _settle(rr["token"], payment, "webhook")
+            return "recovery_settled"
+        record = _get_demo_record(order_id)
+        if name == "payment.failed" and record and record.get("stage") == LiveDemoStage.ORDER_CREATED.value:
+            _validate_failed_payment(payment, order_id, record)
+            _record_failure(order_id, payment, "webhook")
+            return "failure_recorded"
+    except HTTPException as e:
+        if e.status_code == 409:
+            return "already_recorded"       # Checkout's report got there first
+        raise
+    return "ignored"
+
+
+@app.post("/api/webhooks/razorpay")
+async def razorpay_webhook(request: Request):
+    """Razorpay's server-to-server events, verified with X-Razorpay-Signature
+    over the raw body. De-duplicated by event id (Razorpay retries)."""
+    if not razorpay_webhook_configured():
+        raise HTTPException(status_code=503, detail="Webhooks aren't configured on this server.")
+    raw = await request.body()
+    if not verify_webhook_signature(raw, request.headers.get("x-razorpay-signature")):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.")
+    try:
+        event = json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Webhook body is not JSON.")
+
+    event_id = request.headers.get("x-razorpay-event-id")
+    if event_id:
+        def claim(current):
+            if current:
+                raise _NothingToDo()
+            return {"received_at": time.time()}
+        try:
+            await run_in_threadpool(storage.update_atomic, WEBHOOK_EVENT_PREFIX + event_id, claim, 2 * 86400)
+        except _NothingToDo:
+            return {"status": "duplicate"}
+    try:
+        status = await run_in_threadpool(_handle_webhook_event, event)
+    except HTTPException as e:
+        # A mismatched payment is logged and acknowledged; Razorpay retrying won't fix it.
+        logger.warning("Webhook event %s rejected: %s", event.get("event"), e.detail)
+        status = "rejected"
+    return {"status": status}
 
 
 if __name__ == "__main__":

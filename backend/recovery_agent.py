@@ -19,6 +19,7 @@ from models import (
     PaymentRecord, FailureReason, RecoveryAction, Outcome,
     AuditLogEntry, RecoveryResult,
 )
+from executor import plan_execution
 
 MAX_ATTEMPTS = 3
 NO_RETRY_REASONS = {FailureReason.FRAUD_SUSPECTED}
@@ -134,6 +135,9 @@ def execute_action(state: AgentState) -> AgentState:
     p = state["payment"]
     action = state["action"]
     p.attempt_count += 1
+    # The same executor the live demo carries out; the batch only records the
+    # plan (no Razorpay call, no customer). Only the outcome below is simulated.
+    plan = plan_execution(action, p.amount, p.original_method)
 
     key = (p.failure_reason, action)
     prob = RECOVERY_PROBABILITY.get(key, DEFAULT_RECOVERY_PROBABILITY)
@@ -151,9 +155,9 @@ def execute_action(state: AgentState) -> AgentState:
         state["outcome"] = Outcome.STILL_FAILED
 
     _log(state, "execute",
-         f"Executed '{action.value}' (attempt {p.attempt_count}/{MAX_ATTEMPTS}) — "
-         f"simulated recovery outcome. Result: {state['outcome'].value}.",
-         data={"amount": p.amount, "attempt": p.attempt_count})
+         f"Executed '{action.value}' (attempt {p.attempt_count}/{MAX_ATTEMPTS}): {plan.summary} "
+         f"Simulated recovery outcome: {state['outcome'].value}.",
+         data={"amount": p.amount, "attempt": p.attempt_count, "plan": plan.to_dict()})
 
     # The loop doesn't stop itself at MAX_ATTEMPTS: a still-failed payment
     # goes back through safety_check, which enforces the retry budget.
@@ -171,17 +175,24 @@ def should_replan(state: AgentState) -> str:
     return "end"
 
 
+ESCALATION = {
+    RecoveryAction.RETRY_SAME_METHOD: RecoveryAction.SUGGEST_ALTERNATE_METHOD,
+    RecoveryAction.SUGGEST_ALTERNATE_METHOD: RecoveryAction.SEND_REMINDER_LINK,
+    RecoveryAction.SEND_REMINDER_LINK: RecoveryAction.ESCALATE_TO_SUPPORT,
+    RecoveryAction.RETRY_WITH_DELAY: RecoveryAction.SUGGEST_ALTERNATE_METHOD,
+}
+
+
+def next_action(prev: RecoveryAction) -> RecoveryAction:
+    """The stronger action to try after `prev` failed (batch and live demo)."""
+    return ESCALATION.get(RecoveryAction(prev), RecoveryAction.ESCALATE_TO_SUPPORT)
+
+
 def escalate_action(state: AgentState) -> AgentState:
     """On replan, escalate to a stronger action rather than repeating
     the same one blindly."""
-    escalation = {
-        RecoveryAction.RETRY_SAME_METHOD: RecoveryAction.SUGGEST_ALTERNATE_METHOD,
-        RecoveryAction.SUGGEST_ALTERNATE_METHOD: RecoveryAction.SEND_REMINDER_LINK,
-        RecoveryAction.SEND_REMINDER_LINK: RecoveryAction.ESCALATE_TO_SUPPORT,
-        RecoveryAction.RETRY_WITH_DELAY: RecoveryAction.SUGGEST_ALTERNATE_METHOD,
-    }
     prev = state["action"]
-    state["action"] = escalation.get(prev, RecoveryAction.ESCALATE_TO_SUPPORT)
+    state["action"] = next_action(prev)
     _log(state, "replan",
          f"Attempt {state['payment'].attempt_count} still failed. Escalating strategy from "
          f"'{prev.value}' to '{state['action'].value}'.")

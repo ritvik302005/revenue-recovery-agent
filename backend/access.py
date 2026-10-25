@@ -93,7 +93,11 @@ def _day_key() -> str:
 
 def _session_take(token: str, wanted: int) -> int:
     """Atomically take up to `wanted` from the session budget (negative gives back)."""
-    key = SESSION_KEY_PREFIX + owner_of(token)
+    return _owner_take(owner_of(token), wanted)
+
+
+def _owner_take(owner: str, wanted: int) -> int:
+    key = SESSION_KEY_PREFIX + owner
     granted = 0
 
     def fn(current: Optional[dict]) -> dict:
@@ -126,21 +130,31 @@ def _day_take(wanted: int) -> int:
 def reserve_orders(token: str, wanted: int) -> int:
     """Take up to `wanted` real-order slots from this session's budget and
     from today's server-wide cap. Returns the number granted (maybe 0)."""
-    from_session = max(0, _session_take(token, wanted))
+    return reserve_orders_for_owner(owner_of(token), wanted)
+
+
+def reserve_orders_for_owner(owner: str, wanted: int) -> int:
+    """As reserve_orders, for a session known only by its owner id (e.g. a
+    customer paying a recovery request the session's demo created)."""
+    from_session = max(0, _owner_take(owner, wanted))
     if from_session == 0:
         return 0
     from_day = max(0, _day_take(from_session))
     if from_day < from_session:   # give back what today's cap couldn't cover
-        _session_take(token, -(from_session - from_day))
+        _owner_take(owner, -(from_session - from_day))
     return from_day
 
 
 def require_orders(token: str, wanted: int = 1) -> None:
     """Reserve exactly `wanted` slots or raise 429 (nothing is kept on failure)."""
-    granted = reserve_orders(token, wanted)
+    require_orders_for_owner(owner_of(token), wanted)
+
+
+def require_orders_for_owner(owner: str, wanted: int = 1) -> None:
+    granted = reserve_orders_for_owner(owner, wanted)
     if granted < wanted:
         if granted:
-            refund_orders(token, granted)
+            refund_orders_for_owner(owner, granted)
         raise HTTPException(
             status_code=429,
             detail="The limit on real Razorpay test orders has been reached for this session or for today. "
@@ -150,10 +164,14 @@ def require_orders(token: str, wanted: int = 1) -> None:
 
 def refund_orders(token: str, n: int) -> None:
     """Return `n` slots, e.g. when the Razorpay call failed and no order exists."""
+    refund_orders_for_owner(owner_of(token), n)
+
+
+def refund_orders_for_owner(owner: str, n: int) -> None:
     if n <= 0:
         return
     _day_take(-n)
     try:
-        _session_take(token, -n)
+        _owner_take(owner, -n)
     except HTTPException:
         pass    # session already expired; nothing to give back to

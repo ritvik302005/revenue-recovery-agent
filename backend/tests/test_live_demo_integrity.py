@@ -1,290 +1,300 @@
 """
-Live-demo payment integrity: the recovery order is created and bound by
-the server, session stages only move forward, and replays or races can't
-record a recovery twice. Razorpay is mocked; nothing here hits the network.
+Live demo (P1 guarantees, P7 flow): a real failure is executed at once; the
+customer pays on a server-bound recovery request; stages only move forward;
+payments can't be reused, replayed, raced or faked. Razorpay is mocked.
 """
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from conftest import sign
+from live_helpers import (awaiting, create_order, customer_order, customer_report, failed, pay_request,
+                          payment, report_failure, session, token_of)
 
 
-def _order(order_id, amount=1000):
-    return {"id": order_id, "amount": amount, "currency": "INR", "status": "created"}
+# ---- the agent executes its decision at once (P7-1) ---------------------------
+
+def test_failure_is_executed_immediately(client):
+    create_order(client)
+    view = report_failure(client).json()
+    assert view["failure_reason"] == "bank_timeout"
+    assert view["recommended_action"] == "retry_same_method"
+    assert view["stage"] == "awaiting_customer"
+    assert view["recovery_attempts"] == 1
+    req = view["current_request"]
+    assert req["status"] == "open" and req["seconds_until_available"] == 0 and req["excluded_method"] is None
+    assert len(view["outbox"]) == 1 and view["outbox"][0]["link"] == req["link"]
+    assert "try again" in view["outbox"][0]["text"]
+    assert [e["step"] for e in view["audit_trail"]] == ["classify", "select_action", "safety_check", "execute"]
 
 
-def _payment(payment_id, order_id, status, amount=1000, **extra):
-    return {"id": payment_id, "order_id": order_id, "amount": amount, "currency": "INR",
-            "status": status, **extra}
+def test_token_never_appears_whole_in_the_audit_trail(client):
+    token = awaiting(client)
+    trail = session(client).json()["audit_trail"]
+    assert all(token not in e["detail"] for e in trail)
 
 
-FAILED_ON_A = _payment("pay_fail", "order_A", "failed",
-                       error_code="BAD_REQUEST_ERROR", error_reason="payment_declined")
+def test_customer_pays_and_the_recovery_is_verified(client, isolated_state_db):
+    token = awaiting(client)
+    customer = TestClient(isolated_state_db.app)          # no session: the token is the customer's access
+    view = customer.get(f"/api/recover/{token}").json()
+    assert view["status"] == "open" and view["amount"] == 1000 and view["merchant"]
 
-
-def _create_order(client, order_id="order_A"):
-    with patch("main.create_real_order", return_value=_order(order_id)):
-        r = client.post("/api/live-demo/create-order", json={"amount": 1000})
+    r = pay_request(customer, token, "order_R1")
     assert r.status_code == 200
-    return r
+    assert r.json()["status"] == "paid" and r.json()["amount_recovered"] == 1000
+
+    op = session(client).json()
+    assert op["stage"] == "recovered"
+    assert op["result"]["recovery_order_id"] == "order_R1"
+    assert op["result"]["outcome_is_simulated"] is False
 
 
-def _report_failure(client, payment=FAILED_ON_A, order_id="order_A"):
-    with patch("main.fetch_real_payment", return_value=payment):
-        return client.post("/api/live-demo/report-failure",
-                           params={"order_id": order_id, "payment_id": payment["id"]})
-
-
-def _create_recovery(client, recovery_order_id="order_R1", order_id="order_A"):
-    with patch("main.create_real_order", return_value=_order(recovery_order_id)):
-        return client.post("/api/live-demo/create-recovery-order", params={"order_id": order_id})
-
-
-def _report_recovery(client, payment, recovery_order_id, order_id="order_A", signature="auto"):
-    """Report a recovery attempt. A captured payment gets the signature
-    Checkout would return for (recovery_order_id, payment id) unless the
-    test passes its own (or None)."""
-    params = {"order_id": order_id, "recovery_order_id": recovery_order_id,
-              "recovery_payment_id": payment["id"]}
-    if signature == "auto":
-        signature = sign(recovery_order_id, payment["id"]) if payment["status"] == "captured" else None
-    if signature is not None:
-        params["razorpay_signature"] = signature
-    with patch("main.fetch_real_payment", return_value=payment):
-        return client.post("/api/live-demo/report-recovery", params=params)
-
-
-@pytest.fixture()
-def failed_session(client):
-    """A session with a recorded failure, ready for a recovery order."""
-    _create_order(client)
-    assert _report_failure(client).status_code == 200
-    return client
-
-
-@pytest.fixture()
-def recovery_ready(failed_session):
-    """A session with a server-created recovery order order_R1."""
-    r = _create_recovery(failed_session)
-    assert r.status_code == 200
-    return failed_session
-
-
-# ---- happy path ------------------------------------------------------------
-
-def test_full_flow_records_a_real_recovery(recovery_ready, isolated_state_db):
-    r = _report_recovery(recovery_ready, _payment("pay_ok", "order_R1", "captured"), "order_R1")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["recovery_outcome"] == "recovered"
-    assert body["recovery_order_id"] == "order_R1"
-    assert body["outcome_is_simulated"] is False
-    assert body["stage"] == "recovered"
-    assert isolated_state_db._get_demo_record("order_A")["stage"] == "recovered"
-
-
-def test_create_recovery_order_uses_the_original_amount(failed_session):
-    with patch("main.create_real_order", return_value=_order("order_R1")) as create:
-        r = failed_session.post("/api/live-demo/create-recovery-order", params={"order_id": "order_A"})
-    assert r.status_code == 200
+def test_recovery_order_is_created_once_for_the_original_amount(client):
+    token = awaiting(client)
+    with patch("main.create_real_order", return_value={"id": "order_R1", "amount": 1000, "currency": "INR"}) as create:
+        first = client.post(f"/api/recover/{token}/order")
+        second = client.post(f"/api/recover/{token}/order")
+    assert first.status_code == second.status_code == 200
+    assert first.json()["order"]["id"] == second.json()["order"]["id"] == "order_R1"
+    assert create.call_count == 1
     assert create.call_args.kwargs["amount"] == 1000
 
 
-# ---- B2: the recovery order is bound to the session ------------------------
+# ---- B2: the recovery order is bound to the request ---------------------------
 
-def test_recovery_on_an_order_the_server_did_not_create_is_rejected(recovery_ready):
-    # A genuinely captured payment, but on some other order in the account.
-    r = _report_recovery(recovery_ready, _payment("pay_other", "order_X", "captured"), "order_X")
+def test_payment_on_another_order_is_rejected(client):
+    token = awaiting(client)
+    assert customer_order(client, token, "order_R1").status_code == 200
+    r = customer_report(client, token, payment("pay_other", "order_X", "captured"))
     assert r.status_code == 400
-    assert "not the recovery order created" in r.json()["detail"]
+    assert "not this recovery request's order" in r.json()["detail"]
 
 
-def test_original_order_cannot_be_its_own_recovery_order(recovery_ready):
-    r = _report_recovery(recovery_ready, _payment("pay_orig2", "order_A", "captured"), "order_A")
-    assert r.status_code == 400
+def test_original_order_cannot_be_its_own_recovery(client):
+    token = awaiting(client)
+    assert customer_order(client, token, "order_R1").status_code == 200
+    assert customer_report(client, token, payment("pay_orig2", "order_A", "captured")).status_code == 400
 
 
-def test_recovery_report_needs_a_recovery_order_first(failed_session):
-    r = _report_recovery(failed_session, _payment("pay_ok", "order_R1", "captured"), "order_R1")
-    assert r.status_code == 409
+def test_report_needs_an_order_first(client):
+    token = awaiting(client)
+    assert customer_report(client, token, payment("pay_ok", "order_R1", "captured")).status_code == 409
 
 
-# ---- B3: stages only move forward ------------------------------------------
-
-def test_failure_cannot_be_reported_twice(failed_session):
-    r = _report_failure(failed_session)
-    assert r.status_code == 409
-
-
-def test_finished_session_cannot_be_reset_or_recovered_again(recovery_ready):
-    ok = _payment("pay_ok", "order_R1", "captured")
-    assert _report_recovery(recovery_ready, ok, "order_R1").status_code == 200
-
-    assert _report_failure(recovery_ready).status_code == 409          # the old reset trick
-    assert _report_recovery(recovery_ready, ok, "order_R1").status_code == 409
-    assert _create_recovery(recovery_ready, "order_R2").status_code == 409
-
-
-def test_second_recovery_order_while_one_is_open_is_rejected(recovery_ready):
-    assert _create_recovery(recovery_ready, "order_R2").status_code == 409
-
-
-def test_unknown_session_is_404_everywhere(client):
-    assert _report_failure(client, order_id="order_nope").status_code == 404
-    assert _create_recovery(client, order_id="order_nope").status_code == 404
-
-
-# ---- payments still in flight ----------------------------------------------
-
-def test_non_final_payment_does_not_record_an_outcome(recovery_ready, isolated_state_db):
-    r = _report_recovery(recovery_ready, _payment("pay_slow", "order_R1", "authorized"), "order_R1")
-    assert r.status_code == 409
-    assert isolated_state_db._get_demo_record("order_A")["stage"] == "recovery_order_created"
-
-    r = _report_recovery(recovery_ready, _payment("pay_slow", "order_R1", "captured"), "order_R1")
-    assert r.status_code == 200
-
-
-# ---- P1-3: a payment can't be counted twice ----------------------------------
-
-def _second_session(client):
-    """Session B with its own recorded failure and recovery order order_R_B."""
-    _create_order(client, "order_B")
-    failed_b = _payment("pay_failB", "order_B", "failed", error_reason="payment_declined")
-    assert _report_failure(client, failed_b, order_id="order_B").status_code == 200
-    assert _create_recovery(client, "order_RB", order_id="order_B").status_code == 200
-
-
-def test_captured_payment_cannot_recover_a_second_session(recovery_ready):
-    ok_a = _payment("pay_ok", "order_R1", "captured")
-    assert _report_recovery(recovery_ready, ok_a, "order_R1").status_code == 200
-
-    _second_session(recovery_ready)
-    # Same captured payment, offered to session B (with A's recovery order, or B's).
-    assert _report_recovery(recovery_ready, ok_a, "order_R1", order_id="order_B").status_code == 400
-    assert _report_recovery(recovery_ready, ok_a, "order_RB", order_id="order_B").status_code == 400
-
-
-def test_original_failed_payment_cannot_be_submitted_as_the_recovery(recovery_ready):
-    # Even if it were somehow captured later, it belongs to the original order.
-    reused = _payment("pay_fail", "order_A", "captured")
-    assert _report_recovery(recovery_ready, reused, "order_R1").status_code == 400
-
-
-def test_failure_payment_from_another_session_is_rejected(recovery_ready):
-    _create_order(recovery_ready, "order_B")
-    assert _report_failure(recovery_ready, FAILED_ON_A, order_id="order_B").status_code == 400
-
-
-# ---- P1-4: retry after a failed recovery, within the retry budget -------------
-
-def _fail_attempt(client, recovery_order_id):
-    r = _report_recovery(client, _payment(f"pay_x{recovery_order_id.removeprefix('order_')}", recovery_order_id, "failed"),
-                         recovery_order_id)
-    assert r.status_code == 200
-    return r.json()
-
-
-def test_failed_recovery_can_be_retried_with_a_new_order(recovery_ready, isolated_state_db):
-    first = _fail_attempt(recovery_ready, "order_R1")
-    assert first["recovery_outcome"] == "still_failed"
-    assert first["stage"] == "recovery_failed"
-    assert first["recovery_attempts"] == 1
-
-    assert _create_recovery(recovery_ready, "order_R2").status_code == 200
-    r = _report_recovery(recovery_ready, _payment("pay_ok2", "order_R2", "captured"), "order_R2")
-    assert r.status_code == 200
-    assert r.json()["recovery_outcome"] == "recovered"
-    assert r.json()["recovery_attempts"] == 2
-
-
-def test_stale_recovery_order_is_rejected_after_a_new_one(recovery_ready):
-    _fail_attempt(recovery_ready, "order_R1")
-    assert _create_recovery(recovery_ready, "order_R2").status_code == 200
-    r = _report_recovery(recovery_ready, _payment("pay_late", "order_R1", "captured"), "order_R1")
+@pytest.mark.parametrize("bad", [{"amount": 50000}, {"currency": "USD"}])
+def test_amount_and_currency_must_match(client, bad):
+    token = awaiting(client)
+    customer_order(client, token, "order_R1")
+    r = customer_report(client, token, {**payment("pay_ok", "order_R1", "captured"), **bad})
     assert r.status_code == 400
 
 
-def test_safety_gate_blocks_the_attempt_after_max_attempts(recovery_ready, isolated_state_db):
+def test_unknown_and_malformed_tokens(client):
+    assert client.get("/api/recover/rr_" + "x" * 32).status_code == 404
+    assert client.get("/api/recover/not-a-token").status_code == 422
+    assert client.post("/api/recover/rr_" + "x" * 32 + "/report", params={"payment_id": "pay_a"}).status_code == 404
+
+
+# ---- B3: stages only move forward ----------------------------------------------
+
+def test_failure_cannot_be_reported_twice(client):
+    awaiting(client)
+    assert report_failure(client).status_code == 409
+
+
+def test_finished_session_cannot_be_reset_or_recovered_again(client):
+    token = awaiting(client)
+    assert pay_request(client, token, "order_R1").status_code == 200
+    assert report_failure(client).status_code == 409                       # the old reset trick
+    assert customer_report(client, token, payment("pay_R1", "order_R1", "captured")).status_code == 409
+    assert customer_order(client, token, "order_R2").status_code == 409
+
+
+def test_unknown_session_is_404(client):
+    assert report_failure(client, order_id="order_nope").status_code == 404
+    assert session(client, "order_nope").status_code == 404
+
+
+# ---- payments still in flight ----------------------------------------------------
+
+def test_non_final_payment_does_not_record_an_outcome(client):
+    token = awaiting(client)
+    customer_order(client, token, "order_R1")
+    assert customer_report(client, token, payment("pay_slow", "order_R1", "authorized")).status_code == 409
+    assert session(client).json()["stage"] == "awaiting_customer"
+    assert customer_report(client, token, payment("pay_slow", "order_R1", "captured")).status_code == 200
+
+
+# ---- P1-3: a payment can't be counted twice ---------------------------------------
+
+def test_captured_payment_cannot_recover_a_second_session(client):
+    token_a = awaiting(client)
+    ok_a = payment("pay_okA", "order_RA", "captured")
+    customer_order(client, token_a, "order_RA")
+    assert customer_report(client, token_a, ok_a).status_code == 200
+
+    token_b = awaiting(client, "order_B", failed("pay_failB", "order_B"))
+    customer_order(client, token_b, "order_RB")
+    assert customer_report(client, token_b, ok_a).status_code == 400
+
+
+def test_failure_payment_from_another_session_is_rejected(client):
+    awaiting(client)
+    create_order(client, "order_B")
+    assert report_failure(client, failed(order_id="order_A"), order_id="order_B").status_code == 400
+
+
+# ---- P7: a failed attempt re-plans to the next action ------------------------------
+
+def test_failed_payment_replans_to_an_alternate_method(client):
+    first = awaiting(client)
+    r = pay_request(client, first, "order_R1", status="failed")
+    assert r.status_code == 200
+    assert r.json()["status"] == "failed"
+
+    view = session(client).json()
+    assert view["stage"] == "awaiting_customer"
+    assert view["recovery_attempts"] == 2
+    assert view["recommended_action"] == "suggest_alternate_method"
+    second = token_of(view)
+    assert second != first
+    assert view["current_request"]["excluded_method"] == "card"
+    assert len(view["outbox"]) == 2
+    customer = client.get(f"/api/recover/{second}").json()
+    assert customer["checkout_config"] == {"display": {"hide": [{"method": "card"}],
+                                                       "preferences": {"show_default_blocks": True}}}
+
+
+def test_old_request_cannot_be_paid_after_a_replan(client):
+    first = awaiting(client)
+    pay_request(client, first, "order_R1", status="failed")
+    assert customer_order(client, first, "order_R9").status_code == 409
+    assert client.get(f"/api/recover/{first}").json()["status"] == "failed"
+
+
+def test_safety_gate_stops_after_max_attempts(client):
     from recovery_agent import MAX_ATTEMPTS
-    _fail_attempt(recovery_ready, "order_R1")
-    for n in range(2, MAX_ATTEMPTS + 1):
-        assert _create_recovery(recovery_ready, f"order_R{n}").status_code == 200
-        _fail_attempt(recovery_ready, f"order_R{n}")
+    token = awaiting(client)
+    for n in range(1, MAX_ATTEMPTS + 1):
+        assert pay_request(client, token, f"order_R{n}", status="failed").status_code == 200
+        view = session(client).json()
+        if view["current_request"]:
+            token = token_of(view)
 
+    assert view["stage"] == "held"
+    assert view["recovery_attempts"] == MAX_ATTEMPTS
+    assert "MAX_ATTEMPTS" in view["audit_trail"][-1]["detail"]
+    assert [m["action"] for m in view["outbox"]] == ["retry_same_method", "suggest_alternate_method", "send_reminder_link"]
     with patch("main.create_real_order") as create:
-        r = recovery_ready.post("/api/live-demo/create-recovery-order", params={"order_id": "order_A"})
-    assert r.status_code == 409
-    assert "Safety gate" in r.json()["detail"]
-    create.assert_not_called()          # no real order once the budget is used
-
-    record = isolated_state_db._get_demo_record("order_A")
-    assert record["stage"] == "held"
-    assert record["recovery_attempts"] == MAX_ATTEMPTS
-    assert "MAX_ATTEMPTS" in record["audit_trail"][-1]["detail"]
-    assert _create_recovery(recovery_ready, "order_R9").status_code == 409
+        assert client.post(f"/api/recover/{token}/order").status_code == 409
+    create.assert_not_called()
 
 
-# ---- P2-1: only a payment that actually failed starts a recovery ---------------
+def test_reminder_that_fails_escalates_to_support(client):
+    token = awaiting(client, pay=failed(error_reason="insufficient_fund"))
+    assert session(client).json()["recommended_action"] == "send_reminder_link"
+    pay_request(client, token, "order_R1", status="failed")
+    view = session(client).json()
+    assert view["stage"] == "escalated"
+    assert view["support_case"]["id"].startswith("case_")
+    assert view["current_request"] is None
+    assert client.get(f"/api/recover/{token}").json()["status"] == "escalated"
+
+
+def test_unknown_reason_opens_a_support_case_without_asking_for_money(client):
+    create_order(client)
+    view = report_failure(client, failed(error_reason="payment_failed")).json()
+    assert view["recommended_action"] == "escalate_to_support"
+    assert view["stage"] == "escalated"
+    assert view["outbox"] == [] and view["current_request"] is None
+    assert view["support_case"]["failure_reason"] == "unknown"
+
+
+# ---- P7: delays and expiry ------------------------------------------------------------
+
+def test_retry_with_delay_is_not_payable_until_the_delay_passes(client):
+    token = awaiting(client, pay=failed(error_reason="bank_technical_error"))
+    view = client.get(f"/api/recover/{token}").json()
+    assert view["action"] == "retry_with_delay"
+    assert view["status"] == "scheduled" and 25 <= view["seconds_until_available"] <= 30
+    with patch("main.create_real_order") as create:
+        r = client.post(f"/api/recover/{token}/order")
+    assert r.status_code == 409 and "Not yet" in r.json()["detail"]
+    create.assert_not_called()
+
+    later = time.time() + 31
+    with patch("main.time.time", return_value=later):
+        assert client.get(f"/api/recover/{token}").json()["status"] == "open"
+        assert customer_order(client, token, "order_R1").status_code == 200
+
+
+def test_unpaid_request_expires_and_replans(client, isolated_state_db, monkeypatch):
+    monkeypatch.setattr(isolated_state_db, "RECOVERY_REQUEST_TTL_SECONDS", -1)
+    first = awaiting(client)
+    view = session(client).json()                     # the operator's poll notices the expiry
+    assert view["recovery_attempts"] == 2
+    assert view["recommended_action"] == "suggest_alternate_method"
+    assert client.get(f"/api/recover/{first}").json()["status"] == "expired"
+    assert any("didn't pay before the request expired" in e["detail"] for e in view["audit_trail"])
+
+
+# ---- P2-1: only a payment that actually failed starts a recovery -------------------
 
 @pytest.mark.parametrize("status, code", [
-    ("captured", 400),      # a successful payment is not a failure (audit bug B1)
-    ("refunded", 400),
-    ("created", 409),       # still in flight: not final yet
-    ("authorized", 409),
+    ("captured", 400), ("refunded", 400), ("created", 409), ("authorized", 409),
 ])
-def test_report_failure_rejects_payments_that_did_not_fail(client, isolated_state_db, status, code):
-    _create_order(client)
-    r = _report_failure(client, _payment("pay_s", "order_A", status))
+def test_report_failure_rejects_payments_that_did_not_fail(client, status, code):
+    create_order(client)
+    r = report_failure(client, payment("pay_s", "order_A", status))
     assert r.status_code == code
     assert status in r.json()["detail"]
-    assert isolated_state_db._get_demo_record("order_A")["stage"] == "order_created"
+    assert session(client).json()["stage"] == "order_created"
 
 
-# ---- P1-5: Checkout signature on a successful recovery -------------------------
+# ---- P1-5: Checkout signature on a successful recovery ----------------------------
 
 @pytest.mark.parametrize("signature", [
-    None,                                   # missing
-    "0" * 64,                               # wrong
-    "not-hex",                              # malformed
-    sign("order_A", "pay_ok"),              # signed for the original order, not the recovery order
-    sign("order_R1", "pay_other"),          # signed for a different payment
+    None, "0" * 64, "not-hex",
+    sign("order_A", "pay_ok"),          # signed for the original order, not the recovery order
+    sign("order_R1", "pay_other"),      # signed for a different payment
 ])
-def test_captured_recovery_needs_a_valid_signature(recovery_ready, isolated_state_db, signature):
-    r = _report_recovery(recovery_ready, _payment("pay_ok", "order_R1", "captured"), "order_R1",
-                         signature=signature)
+def test_captured_recovery_needs_a_valid_signature(client, signature):
+    token = awaiting(client)
+    customer_order(client, token, "order_R1")
+    r = customer_report(client, token, payment("pay_ok", "order_R1", "captured"), signature=signature)
     assert r.status_code == 400
     assert "signature" in r.json()["detail"]
-    assert isolated_state_db._get_demo_record("order_A")["stage"] == "recovery_order_created"
+    assert session(client).json()["stage"] == "awaiting_customer"
 
 
-def test_failed_recovery_attempt_needs_no_signature(recovery_ready):
-    # Razorpay's payment.failed event carries no signature.
-    r = _report_recovery(recovery_ready, _payment("pay_x", "order_R1", "failed"), "order_R1", signature=None)
-    assert r.status_code == 200
-    assert r.json()["recovery_outcome"] == "still_failed"
+def test_failed_attempt_needs_no_signature(client):
+    token = awaiting(client)
+    customer_order(client, token, "order_R1")
+    assert customer_report(client, token, payment("pay_x", "order_R1", "failed"), signature=None).status_code == 200
 
 
-# ---- races -------------------------------------------------------------------
+# ---- races ---------------------------------------------------------------------------
 
-def test_two_simultaneous_recovery_reports_record_only_one(recovery_ready, isolated_state_db):
+def test_two_simultaneous_reports_record_only_one(client, isolated_state_db):
     main = isolated_state_db
+    token = awaiting(client)
+    customer_order(client, token, "order_R1")
     barrier = threading.Barrier(2)
 
     def slow_fetch(_payment_id):
-        barrier.wait(timeout=5)   # both requests have passed the first stage check
-        return _payment("pay_ok", "order_R1", "captured")
+        barrier.wait(timeout=5)   # both requests are past the first checks
+        return payment("pay_ok", "order_R1", "captured")
 
     outcomes = []
 
     def submit():
         try:
-            main.report_recovery(order_id="order_A", recovery_payment_id="pay_ok", recovery_order_id="order_R1",
-                                 razorpay_signature=sign("order_R1", "pay_ok"),
-                                 token=recovery_ready.headers["X-Session-Token"])
+            main.recovery_report(token=token, payment_id="pay_ok", razorpay_signature=sign("order_R1", "pay_ok"))
             outcomes.append(200)
         except HTTPException as e:
             outcomes.append(e.status_code)

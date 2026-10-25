@@ -89,18 +89,19 @@ class AuditLogEntry(BaseModel):
 
 
 class LiveDemoStage(str, Enum):
-    """Live-demo session stages. They only move forward:
+    """Live-demo session stages (P7). They only move forward:
 
-    order_created -> failure_recorded -> recovery_order_created -> recovered
-                  -> held (safety gate)                         -> recovery_failed
-                                                                     -> recovery_order_created (retry)
+    order_created -> awaiting_customer -> recovered            (customer paid; verified)
+                  -> escalated                                  (support case, no payment request)
+                  -> held                                       (fraud, or retry budget used)
+    A failed or unpaid recovery request re-plans: awaiting_customer -> awaiting_customer
+    (next action's request) | escalated | held.
     """
     ORDER_CREATED = "order_created"
-    FAILURE_RECORDED = "failure_recorded"
-    HELD = "held"                                  # safety gate blocked recovery; final
-    RECOVERY_ORDER_CREATED = "recovery_order_created"
+    AWAITING_CUSTOMER = "awaiting_customer"        # a recovery request is out with the customer
     RECOVERED = "recovered"                        # final
-    RECOVERY_FAILED = "recovery_failed"            # a new recovery order may follow
+    ESCALATED = "escalated"                        # final for the agent: a support case is open
+    HELD = "held"                                  # final: safety gate blocked further action
 
 
 class LiveDemoResult(BaseModel):

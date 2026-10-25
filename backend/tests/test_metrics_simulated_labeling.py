@@ -97,27 +97,9 @@ def test_live_demo_result_is_never_labeled_simulated(client, isolated_state_db):
     """The flip side of the same contract: a genuinely real live-demo
     recovery must be marked outcome_is_simulated=False, so the two
     kinds of evidence are never confused in either direction."""
-    main = isolated_state_db
-
-    main._set_demo_record("order_live", {
-        "amount": 1000,
-        "owner": owner(client),
-        "stage": "recovery_order_created",
-        "current_recovery_order_id": "order_R",
-        "original_payment_id": "pay_original",
-        "failure_reason": "card_declined",
-        "raw_error_code": "x",
-        "recommended_action": "suggest_alternate_method",
-        "safety_check_passed": True,
-        "audit_trail": [],
-    })
-
-    matching_payment = {"order_id": "order_R", "amount": 1000, "currency": "INR", "status": "captured"}
-    with patch("main.fetch_real_payment", return_value=matching_payment):
-        r = client.post(
-            "/api/live-demo/report-recovery",
-            params={"order_id": "order_live", "recovery_order_id": "order_R", "recovery_payment_id": "pay_Y",
-                    "razorpay_signature": sign("order_R", "pay_Y")},
-        )
-    assert r.status_code == 200
-    assert r.json()["outcome_is_simulated"] is False
+    from live_helpers import awaiting, pay_request, session
+    token = awaiting(client, "order_live")
+    assert pay_request(client, token, "order_R").status_code == 200
+    result = session(client, "order_live").json()["result"]
+    assert result["recovery_outcome"] == "recovered"
+    assert result["outcome_is_simulated"] is False
