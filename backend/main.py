@@ -21,11 +21,12 @@ from recovery_agent import run_recovery, select_recovery_action, safety_check, A
 from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
     create_real_order, fetch_real_payment, classify_real_payment_error,
-    verify_checkout_signature,
+    verify_checkout_signature, RazorpayNotConfigured,
 )
 from pydantic import BaseModel, Field, ValidationError
 import logging
 import uuid
+import razorpay.errors
 import storage
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,21 @@ def rate_limit(request: Request):
     if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
         raise HTTPException(status_code=429, detail="Too many requests — please slow down and try again shortly.")
     bucket.append(now)
+
+
+# ---- Razorpay errors shown to the browser ----
+# Raw exception text can carry internal details (hosts, stack context), so
+# it goes to the server log only. Razorpay's own error description (a
+# BadRequestError, e.g. "The id provided does not exist") is safe and
+# useful, so that one is passed through.
+def _razorpay_error(action: str, e: Exception) -> HTTPException:
+    logger.warning("Razorpay call failed (%s): %r", action, e)
+    if isinstance(e, RazorpayNotConfigured):
+        return HTTPException(status_code=503, detail="Razorpay test keys aren't configured on this server, so the live demo is unavailable.")
+    if isinstance(e, razorpay.errors.BadRequestError) and str(e):
+        return HTTPException(status_code=502, detail=f"Could not {action}. Razorpay said: {e}")
+    return HTTPException(status_code=502, detail=f"Could not {action}: Razorpay is unreachable or returned an error. Try again shortly.")
+
 
 # The last batch run, persisted via storage (SQLite, or Redis if configured).
 BATCH_RESULTS_KEY = "batch:last_results"
@@ -373,7 +389,7 @@ def create_demo_order(req: CreateDemoOrderRequest):
     try:
         order = create_real_order(amount=req.amount, receipt=receipt)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not create a real Razorpay order: {e}")
+        raise _razorpay_error("create a real Razorpay order", e)
     _set_demo_record(order["id"], {"amount": req.amount, "stage": LiveDemoStage.ORDER_CREATED.value})
     return order
 
@@ -396,7 +412,7 @@ def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
     try:
         payment = fetch_real_payment(payment_id)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not fetch real payment from Razorpay: {e}")
+        raise _razorpay_error("fetch the real payment from Razorpay", e)
 
     # Ownership/amount/currency checks — never trust the caller's
     # order_id/payment_id pairing without verifying Razorpay's own
@@ -499,7 +515,7 @@ def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
     try:
         order = create_real_order(amount=record["amount"], receipt=receipt)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not create a real Razorpay recovery order: {e}")
+        raise _razorpay_error("create a real Razorpay recovery order", e)
 
     _transition(order_id, retryable, lambda record: {
         "stage": LiveDemoStage.RECOVERY_ORDER_CREATED.value,
@@ -540,7 +556,7 @@ def report_recovery(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
     try:
         payment = fetch_real_payment(recovery_payment_id)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Could not fetch real recovery payment from Razorpay: {e}")
+        raise _razorpay_error("fetch the real recovery payment from Razorpay", e)
 
     # Ownership/amount/currency checks — a captured payment only
     # counts as a recovery if it's genuinely the recovery order's own

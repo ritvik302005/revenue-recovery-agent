@@ -52,9 +52,13 @@ class _TimeoutHTTPAdapter(HTTPAdapter):
         return super().send(request, **kwargs)
 
 
+class RazorpayNotConfigured(RuntimeError):
+    """Test keys are missing, so no Razorpay call can be made."""
+
+
 def get_client() -> razorpay.Client:
     if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-        raise RuntimeError(
+        raise RazorpayNotConfigured(
             "RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET not set. Get your TEST MODE "
             "keys from Dashboard -> Settings -> API Keys and export them as "
             "env vars before calling live Razorpay functions."

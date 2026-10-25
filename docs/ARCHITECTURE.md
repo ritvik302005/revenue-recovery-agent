@@ -123,6 +123,11 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 - `outcome_is_simulated`: always `true` for batch results, `false` for live-demo results.
 - Amounts are integers in paise; currency INR only.
 
+### Errors shown to the browser (P5-3)
+
+- A failed Razorpay call goes through `_razorpay_error(action, e)` in `main.py`: the full exception is logged server-side; the browser gets 502 with Razorpay's own description for a `BadRequestError` ("Razorpay said: …"), 503 when test keys aren't configured (`RazorpayNotConfigured`), and a fixed "unreachable or returned an error" message for anything else. Raw exception text is never returned.
+- `storage.py` logs `REDIS_URL` without its user:password part, and only the exception type on a Redis connection failure.
+
 ## 7. Storage
 
 - Keys: `batch:last_results` (no expiry), `live_demo:<order_id>` (TTL `LIVE_DEMO_TTL_SECONDS`, default 3600), `showcase:latest_live_case` (no expiry; snapshot written when a session reaches `recovered`, `recovery_failed` or `held`).

@@ -26,10 +26,22 @@ import os
 import sqlite3
 import time
 from typing import Optional
+from urllib.parse import urlsplit
 
 REDIS_URL = os.environ.get("REDIS_URL")
 LIVE_DEMO_TTL_SECONDS = int(os.environ.get("LIVE_DEMO_TTL_SECONDS", 3600))  # 1 hour
 DB_PATH = os.environ.get("SQLITE_PATH", os.path.join(os.path.dirname(__file__), "state.db"))
+
+def _redacted(url: str) -> str:
+    """The URL without its user:password part, safe to log."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or "?"
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}{parts.path}"
+    except ValueError:
+        return "<unparseable REDIS_URL>"
+
 
 _redis_client = None
 if REDIS_URL:
@@ -37,9 +49,11 @@ if REDIS_URL:
         import redis  # optional dependency — only needed if REDIS_URL is set
         _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         _redis_client.ping()
-        print(f"[storage] Connected to Redis at {REDIS_URL}.")
+        print(f"[storage] Connected to Redis at {_redacted(REDIS_URL)}.")
     except Exception as e:
-        print(f"[storage] Could not connect to Redis ({e}); falling back to SQLite at {DB_PATH}.")
+        # Only the exception type: an auth error's text can echo connection details.
+        print(f"[storage] Could not connect to Redis at {_redacted(REDIS_URL)} ({type(e).__name__}); "
+              f"falling back to SQLite at {DB_PATH}.")
         _redis_client = None
 
 
