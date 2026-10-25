@@ -29,13 +29,14 @@ export default function Dashboard({ onBack }) {
   const [error, setError] = useState(null)
   const [batchSize, setBatchSize] = useState(60)
   const [seed, setSeed] = useState(42)
+  const [liveOrders, setLiveOrders] = useState(false)
 
   async function runBatch() {
     setLoading(true)
     setError(null)
     try {
       const runRes = await fetch(
-        `${API_BASE}/api/batch/run?n=${batchSize}&seed=${seed}&try_live_orders=true`,
+        `${API_BASE}/api/batch/run?n=${batchSize}&seed=${seed}&try_live_orders=${liveOrders}`,
         { method: 'POST' }
       )
       if (!runRes.ok) throw new Error(`Batch run failed: ${runRes.status}`)
@@ -91,6 +92,10 @@ export default function Dashboard({ onBack }) {
                 border: '1px solid #332c22', background: '#1f1a15', color: '#f0e6d6'
               }}
             />
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-dim)', maxWidth: 190 }}>
+            <input type="checkbox" checked={liveOrders} onChange={(e) => setLiveOrders(e.target.checked)} />
+            Create real Razorpay test orders (first 5 only)
           </label>
           <button className="run-btn" onClick={runBatch} disabled={loading}>
             {loading ? 'Running…' : 'Run Batch'}

@@ -53,4 +53,4 @@ A payment Razorpay declines on a risk check (`payment_risk_check_failed`) is hel
 
 ## If Razorpay is unreachable during the demo
 
-The live demo needs Razorpay; if it fails, the app shows Razorpay's error instead of a result. The batch keeps working: with no connection, every record uses a local order id and the dashboard says "no real Razorpay orders (all order ids local)". Say so plainly. (With live orders on and no connection, a batch can take minutes; task P4-5 fixes that. Until then, run small batches.)
+The live demo needs Razorpay; if it fails, the app shows Razorpay's error instead of a result. The batch keeps working: real orders are off by default, and if you tick "Create real Razorpay test orders", only the first 5 records try one and the first failure stops the rest, so a dead connection costs one timeout. The dashboard then says how many orders were real. Say so plainly.

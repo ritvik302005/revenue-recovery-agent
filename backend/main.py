@@ -120,9 +120,11 @@ def health():
 
 
 @app.post("/api/batch/run", dependencies=[Depends(require_api_key), Depends(rate_limit)])
-def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(True),
+def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(False),
               seed: int = Query(DEFAULT_BATCH_SEED, ge=0, le=2**31 - 1)):
-    """Same seed -> same synthetic batch and same simulated outcomes."""
+    """Same seed -> same synthetic batch and same simulated outcomes.
+    try_live_orders (off by default) creates real test orders for at most
+    MAX_LIVE_ORDERS_PER_BATCH records and stops at the first failure."""
     batch = generate_batch(n=n, seed=seed, try_live_orders=try_live_orders)
     results = [run_recovery(p) for p in batch]
     _save_last_results(results, seed)

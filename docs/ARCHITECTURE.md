@@ -57,7 +57,7 @@ Frontend files (`frontend/src/`):
 | Method | Path | Auth | Rate limit | Calls Razorpay | Notes |
 |---|---|---|---|---|---|
 | GET | `/api/health` | – | – | no | `razorpay_live_connectivity` is a fixed `"unverified"` |
-| POST | `/api/batch/run?n&try_live_orders&seed` | API key if set | 10/min/IP | yes, up to n orders | n ≤ 500; synchronous; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
+| POST | `/api/batch/run?n&try_live_orders&seed` | API key if set | 10/min/IP | only if `try_live_orders`, at most `MAX_LIVE_ORDERS_PER_BATCH` (5) orders, stopping at the first failure | n ≤ 500; synchronous; `try_live_orders` defaults to false; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
 | GET | `/api/batch/results` | – | – | no | Last batch from storage |
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
 | GET | `/api/evaluation` | – | – | no | The committed multi-seed evaluation (`backend/evaluation/batch_eval.json`, made by `evaluate_batch.py`); 404 if not generated. The only source of headline recovery numbers |
@@ -141,6 +141,8 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 | `REDIS_URL` | backend env | Optional storage backend |
 | `SQLITE_PATH` | backend env | Override SQLite location (tests use it) |
 | `LIVE_DEMO_TTL_SECONDS` | backend env | Session expiry |
+| `MAX_LIVE_ORDERS_PER_BATCH` | backend env | Cap on real test orders per batch when `try_live_orders` is on (default 5) |
+| `EVALUATION_PATH` | backend env | Override the evaluation JSON served by `/api/evaluation` |
 | `VITE_API_BASE` | frontend build env | Backend URL; default `http://localhost:8000` |
 
 ## 9. Frontend
