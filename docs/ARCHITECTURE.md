@@ -41,16 +41,17 @@ Frontend files (`frontend/src/`):
 
 | File | Role |
 |---|---|
-| `App.jsx` | Hand-written routing between the three views |
-| `components/Landing.jsx` | Landing page: hero, status chip, recorded case, agent journey, audit trail, real vs simulated |
-| `components/RecordedCaseCard.jsx` | The real recorded case (or empty state) in the hero |
-| `components/AuditTrailVisual.jsx` | That case's real audit trail |
-| `components/AgentJourney.jsx` | Six-step explanation of the agent's controls |
-| `components/HeadlineMetrics.jsx` | Headline numbers from `GET /api/evaluation` |
-| `components/LiveDemo.jsx` | Live Razorpay Checkout flow |
+| `App.jsx` | Hand-written routing between the three views (`navigate` accepts `/`, `/demo`, `/dashboard`, `/#section`); skip link |
+| `components/SiteNav.jsx` | One nav for every page; real hrefs, routed in-app on plain clicks |
+| `components/Landing.jsx` | Landing page: hero, two kinds of evidence, evaluation statement, six controls, audit tape |
+| `components/ReceiptPrinter.jsx` | The recorded case printed as a receipt from a CSS-3D printer, with a provenance stamp (`stampFor`); empty and error states (DESIGN.md §2, §5) |
+| `components/AuditTrailVisual.jsx` | That case's real audit trail, as a printed tape |
+| `components/AgentJourney.jsx` | The six controls as an accessible tab list (arrow keys, no autoplay) |
+| `components/HeadlineMetrics.jsx` | The `GET /api/evaluation` result as a statement with dotted leaders |
+| `components/LiveDemo.jsx` | Live Razorpay Checkout flow: progress steps, test-card panels, result slip |
 | `components/Dashboard.jsx`, `MetricsSection.jsx`, `ResultsTable.jsx` | Batch evaluation |
-| `components/RevenueNetworkBackground.jsx` | Animated canvas background |
-| `hooks/useShowcaseCase.js`, `useHealth.js`, `useEvaluation.js`, `useCountUp.js`, `useReveal.js` | Data and animation hooks |
+| `hooks/useShowcaseCase.js`, `useHealth.js`, `useEvaluation.js`, `useCountUp.js`, `useReveal.js`, `usePointerTilt.js` | Data and animation hooks |
+| `index.css` | The single design system (tokens on `:root`, single-class selectors); see `docs/DESIGN.md` |
 | `api.js` | `API_BASE` and `apiFetch`, the only place that calls `fetch`; errors are `ApiError` with a displayable message; `session: true` gets, sends and renews the session token (memory only) |
 
 ## 3. Endpoints (current)

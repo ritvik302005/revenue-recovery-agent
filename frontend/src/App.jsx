@@ -2,12 +2,17 @@ import { useState, useEffect, useCallback } from 'react'
 import Landing from './components/Landing.jsx'
 import Dashboard from './components/Dashboard.jsx'
 import LiveDemo from './components/LiveDemo.jsx'
-import RevenueNetworkBackground from './components/RevenueNetworkBackground.jsx'
 
 function pathToView(path) {
   if (path === '/demo') return 'demo'
   if (path === '/dashboard') return 'dashboard'
   return 'landing'
+}
+
+function scrollToHash() {
+  const id = window.location.hash.slice(1)
+  if (id) document.getElementById(id)?.scrollIntoView({ block: 'start' })
+  else window.scrollTo(0, 0)
 }
 
 export default function App() {
@@ -19,15 +24,20 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
-  const navigate = useCallback((path) => {
-    window.history.pushState({}, '', path)
-    setView(pathToView(path))
+  // Accepts "/", "/demo", "/dashboard" and "/#section".
+  const navigate = useCallback((href) => {
+    window.history.pushState({}, '', href)
+    setView(pathToView(window.location.pathname))
+    // After the new view renders, go to its #section (or the top).
+    requestAnimationFrame(scrollToHash)
   }, [])
 
   return (
     <>
-      <RevenueNetworkBackground />
-      {view === 'demo' ? <LiveDemo onBack={() => navigate('/dashboard')} /> : view === 'dashboard' ? <Dashboard onBack={() => navigate('/')} /> : <Landing onEnterDemo={() => navigate('/demo')} onEnterDashboard={() => navigate('/dashboard')} />}
+      <a className="skip-link" href="#main">Skip to content</a>
+      {view === 'demo' ? <LiveDemo navigate={navigate} />
+        : view === 'dashboard' ? <Dashboard navigate={navigate} />
+        : <Landing navigate={navigate} onEnterDemo={() => navigate('/demo')} onEnterDashboard={() => navigate('/dashboard')} />}
     </>
   )
 }

@@ -1,8 +1,7 @@
 import { Fragment, useState } from 'react'
+import { formatINR, humanize } from '../hooks/useShowcaseCase.js'
 
-function formatINR(paise) {
-  return `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`
-}
+const OUTCOME_TONE = { recovered: 'sim', pending_customer_action: 'plain', still_failed: 'danger', held_no_action: 'danger' }
 
 export default function ResultsTable({ results }) {
   const [expandedId, setExpandedId] = useState(null)
@@ -10,99 +9,89 @@ export default function ResultsTable({ results }) {
   if (!results || results.length === 0) return null
 
   return (
-    <div className="section">
-      <div className="section-label" style={{ color: '#d4a35a' }}>
-        Batch Results &amp; Audit Trail
-      </div>
-      <p className="section-note">
-        Click a row (or focus its payment id and press Enter) to see the agent's full reasoning for that payment —
-        classification, action selection, safety-check, execution, and any
-        replan/escalation.
+    <section className="panel" aria-labelledby="results-title">
+      <h2 className="panel-label" id="results-title">Batch results and audit trails</h2>
+      <p className="panel-note">
+        Open a row (click it, or focus its payment id and press Enter) to read the agent's
+        steps for that payment: classification, action, safety check, execution and any escalation.
       </p>
-      <table>
-        <thead>
-          <tr>
-            <th>Payment</th>
-            <th>Amount</th>
-            <th>Failure Reason</th>
-            <th>Source</th>
-            <th>Action Taken</th>
-            <th>Attempts</th>
-            <th>Outcome</th>
-          </tr>
-        </thead>
-        <tbody>
-          {results.map((r) => {
-            const expanded = expandedId === r.payment_id
-            const toggle = () => setExpandedId(expanded ? null : r.payment_id)
-            const detailId = `audit-${r.payment_id}`
-            return (
-            <Fragment key={r.payment_id}>
-              <tr className="clickable" onClick={toggle}>
-                <td>
-                  {/* The keyboard and screen-reader control; the row click is a mouse shortcut. */}
-                  <button
-                    type="button"
-                    className="row-toggle"
-                    aria-expanded={expanded}
-                    aria-controls={detailId}
-                    onClick={(e) => { e.stopPropagation(); toggle() }}
-                  >
-                    <span aria-hidden="true">{expanded ? '▾' : '▸'}</span> {r.payment_id}
-                  </button>
-                </td>
-                <td>{formatINR(r.amount)}</td>
-                <td>{r.failure_reason.replace(/_/g, ' ')}</td>
-                <td>
-                  <span
-                    className={
-                      r.razorpay_source === 'razorpay_test_order'
-                        ? 'badge badge-source-live'
-                        : 'badge badge-source-tagged'
-                    }
-                  >
-                    {r.razorpay_source === 'razorpay_test_order' ? 'RAZORPAY TEST ORDER' : 'LOCAL ORDER'}
-                  </span>
-                </td>
-                <td>{r.action_taken.replace(/_/g, ' ')}</td>
-                <td>{r.attempt_count}</td>
-                <td>
-                  <span className={`badge badge-${r.outcome}`}>
-                    {r.outcome === 'recovered' ? 'recovered (simulated)' : r.outcome.replace(/_/g, ' ')}
-                  </span>
-                </td>
-              </tr>
-              {expanded && (
-                <tr id={detailId}>
-                  <td colSpan={7}>
-                    <div className="audit-panel">
-                      {r.raw_error_code && (
-                        <div style={{ marginBottom: 10, color: '#a89a86' }}>
-                          Documented Razorpay error code (assigned synthetically): <code>{r.raw_error_code}</code>
-                          {r.razorpay_order_id && (
-                            <> · Order: <code>{r.razorpay_order_id}</code></>
+      <div className="table-wrap">
+        <table className="table table-results">
+          <thead>
+            <tr>
+              <th scope="col">Payment</th>
+              <th scope="col" className="num">Amount</th>
+              <th scope="col">Failure reason</th>
+              <th scope="col">Order</th>
+              <th scope="col">Action taken</th>
+              <th scope="col" className="num">Attempts</th>
+              <th scope="col">Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {results.map((r) => {
+              const expanded = expandedId === r.payment_id
+              const toggle = () => setExpandedId(expanded ? null : r.payment_id)
+              const detailId = `audit-${r.payment_id}`
+              const realOrder = r.razorpay_source === 'razorpay_test_order'
+              return (
+                <Fragment key={r.payment_id}>
+                  <tr className={`row ${expanded ? 'is-open' : ''}`} onClick={toggle}>
+                    <td>
+                      {/* The keyboard and screen-reader control; the row click is a mouse shortcut. */}
+                      <button
+                        type="button"
+                        className="row-toggle"
+                        aria-expanded={expanded}
+                        aria-controls={detailId}
+                        onClick={(e) => { e.stopPropagation(); toggle() }}
+                      >
+                        <span className="row-caret" aria-hidden="true" /> {r.payment_id}
+                      </button>
+                    </td>
+                    <td className="num">{formatINR(r.amount)}</td>
+                    <td>{humanize(r.failure_reason)}</td>
+                    <td><span className={`badge ${realOrder ? 'badge-real' : 'badge-plain'}`}>{realOrder ? 'Razorpay test order' : 'Local id'}</span></td>
+                    <td>{humanize(r.action_taken)}</td>
+                    <td className="num">{r.attempt_count}</td>
+                    <td>
+                      <span className={`badge badge-${OUTCOME_TONE[r.outcome] || 'plain'}`}>
+                        {r.outcome === 'recovered' ? 'recovered (simulated)' : humanize(r.outcome)}
+                      </span>
+                    </td>
+                  </tr>
+                  {expanded && (
+                    <tr id={detailId} className="row-detail">
+                      <td colSpan={7}>
+                        <div className="detail">
+                          {r.raw_error_code && (
+                            <p className="detail-meta">
+                              Documented Razorpay error code (assigned synthetically): <code>{r.raw_error_code}</code>
+                              {r.razorpay_order_id && <> · Order <code>{r.razorpay_order_id}</code></>}
+                            </p>
                           )}
+                          <ol className="detail-steps">
+                            {r.audit_trail.map((step, i) => (
+                              <li key={i}>
+                                <span className="tape-step">{humanize(step.step)}</span>
+                                <span>{step.detail}</span>
+                              </li>
+                            ))}
+                          </ol>
+                          <p className="detail-sim">
+                            Outcome above is simulated: Razorpay Test Mode can't stand in for a customer
+                            successfully retrying a payment, so batch outcomes come from the probability model.
+                          </p>
                         </div>
-                      )}
-                      {r.audit_trail.map((step, i) => (
-                        <div className="audit-step" key={i}>
-                          <div className="audit-step-name">{step.step}</div>
-                          <div>{step.detail}</div>
-                        </div>
-                      ))}
-                      <div style={{ marginTop: 10, fontSize: 12, color: '#c47f3a' }}>
-                        ⚠ Outcome above is simulated — Razorpay test mode cannot
-                        headlessly simulate a customer's retry succeeding.
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </Fragment>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }

@@ -1,270 +1,131 @@
-import { useState } from 'react'
 import { useReveal } from '../hooks/useReveal.js'
 import { useShowcaseCase } from '../hooks/useShowcaseCase.js'
 import { useHealth, describeHealth } from '../hooks/useHealth.js'
-import RecordedCaseCard from './RecordedCaseCard.jsx'
+import ReceiptPrinter from './ReceiptPrinter.jsx'
 import AgentJourney from './AgentJourney.jsx'
 import HeadlineMetrics from './HeadlineMetrics.jsx'
 import AuditTrailVisual from './AuditTrailVisual.jsx'
+import SiteNav from './SiteNav.jsx'
 
-function RevealSection({ children, className = '', delay = 0 }) {
+function Reveal({ children, className = '', as: Tag = 'div', ...rest }) {
   const [ref, visible] = useReveal()
   return (
-    <div
-      ref={ref}
-      className={`reveal ${visible ? 'reveal-visible' : ''} ${className}`}
-      style={{ transitionDelay: `${delay}ms` }}
-    >
+    <Tag ref={ref} className={`reveal ${visible ? 'is-visible' : ''} ${className}`} {...rest}>
       {children}
+    </Tag>
+  )
+}
+
+function SectionHead({ id, title, children }) {
+  return (
+    <div className="section-head">
+      <h2 className="display section-title" id={id}>{title}</h2>
+      {children && <p className="section-intro">{children}</p>}
     </div>
   )
 }
 
-const NAV_LINKS = [
-  { id: 'overview', label: 'Overview', type: 'scroll' },
-  { id: 'demo', label: 'Live Demo', type: 'route' },
-  { id: 'dashboard', label: 'Evaluation', type: 'route' },
-  { id: 'audit-trail', label: 'Audit Trail', type: 'scroll' },
+const REAL_LINES = [
+  ['Order', 'Created on Razorpay Test Mode by the server'],
+  ['Failure', 'A real Checkout decline with its real error_reason'],
+  ['Recovery', 'Counts only if Razorpay reports the payment captured and the Checkout signature verifies'],
+]
+const SIMULATED_LINES = [
+  ['Order', 'A local id (real test orders are optional, first 5 only)'],
+  ['Failure', 'A documented Razorpay code, assigned by a generator'],
+  ['Outcome', 'Drawn from an illustrative probability table'],
 ]
 
-export default function Landing({ onEnterDemo, onEnterDashboard }) {
-  const [activeSection, setActiveSection] = useState('overview')
+function EvidenceSlip({ tone, title, lines, foot }) {
+  return (
+    <div className={`slip slip-${tone}`}>
+      <div className="slip-head"><span className="slip-dot" aria-hidden="true" />{title}</div>
+      <dl className="slip-lines">
+        {lines.map(([k, v]) => (
+          <div key={k}><dt>{k}</dt><dd>{v}</dd></div>
+        ))}
+      </dl>
+      <p className="slip-foot">{foot}</p>
+    </div>
+  )
+}
+
+export default function Landing({ onEnterDemo, onEnterDashboard, navigate }) {
   const showcase = useShowcaseCase()
   const health = useHealth()
   const keyChip = describeHealth(health)
 
-  function scrollTo(id) {
-    setActiveSection(id)
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
-
   return (
-    <div className="landing">
-      {/* Sticky nav, mirrors the buildathon site's top bar */}
-      <nav className="landing-nav">
-        <div className="landing-nav-inner">
-          <div className="landing-nav-brand"><span className="brand-orb" /> RECOVER</div>
-          <div className="landing-nav-links">
-            {NAV_LINKS.map((l) => (
-              <button
-                key={l.id}
-                className={`landing-nav-link ${activeSection === l.id ? 'active' : ''}`}
-                onClick={() => (l.type === 'route' ? (l.id === 'demo' ? onEnterDemo() : onEnterDashboard()) : scrollTo(l.id))}
-              >
-                {l.label}
-              </button>
-            ))}
-          </div>
-          <button className="run-btn landing-nav-cta" onClick={onEnterDemo}>
-            Run Demo →
-          </button>
-        </div>
-      </nav>
+    <div className="site">
+      <SiteNav current="landing" navigate={navigate} />
 
-      <div className="landing-hero-inner" id="overview">
-        <div className="landing-hero-text">
-          <RevealSection>
-            <div className="landing-eyebrow">RULE-BASED PAYMENT RECOVERY</div>
-            <h1 className="landing-title">
-              Recover revenue<br />before it <span className="landing-title-accent">disappears.</span>
-            </h1>
-            <p className="landing-subtitle">
-              When a Razorpay payment fails, the agent reads the real error,
-              picks a recovery action from a fixed policy, checks it against
-              hard safety rules — fraud holds and a three-attempt retry
-              budget — and logs every decision. Rule-based by design,
-              orchestrated with LangGraph.
+      <main id="main">
+        <section className="hero wrap" id="overview" aria-labelledby="hero-title">
+          <div className="hero-text">
+            <p className="eyebrow">Rule-based payment recovery · Razorpay Test Mode</p>
+            <h1 className="display hero-title" id="hero-title">Failed payments, recovered on the record.</h1>
+            <p className="lede">
+              When a Razorpay payment fails, the agent reads the real error, picks a
+              recovery action from a fixed policy, runs it past hard safety rules
+              (fraud holds and a three-attempt retry budget) and writes every
+              decision down. The rules are lookup tables, not a model; LangGraph runs the steps.
             </p>
-            <div className="landing-cta-row">
-              <button className="run-btn landing-cta landing-cta-primary" onClick={onEnterDemo}>
-                Try Real Razorpay Demo →
-              </button>
-              <button className="run-btn landing-cta landing-cta-secondary" onClick={onEnterDashboard}>
-                View Batch Evaluation
-              </button>
+            <div className="cta-row">
+              <button className="btn btn-paper" onClick={onEnterDemo}>Run the live demo</button>
+              <button className="btn btn-ghost" onClick={onEnterDashboard}>See the batch evaluation</button>
             </div>
-          </RevealSection>
-
-          <RevealSection delay={80}>
-            <div className="landing-provenance">
-              <span className={`provenance-chip ${keyChip.cls}`} style={{ margin: 0 }} role="status">
-                ● {keyChip.text}
-              </span>
-              <span className="provenance-chip chip-simulated" style={{ margin: 0 }}>
-                ● Simulated outcomes always clearly labeled
-              </span>
-            </div>
-          </RevealSection>
-
-        </div>
-
-        <RevealSection delay={40} className="landing-hero-visual-wrap">
-          <RecordedCaseCard showcase={showcase} onEnterDemo={onEnterDemo} />
-        </RevealSection>
-      </div>
-
-      {/* WHY NOW / THE BAR — same two-column pattern as the track cards */}
-      <div className="landing-inner">
-        <RevealSection>
-          <div className="landing-track-card">
-            <div className="landing-track-row">
-              <div>
-                <div className="landing-track-label">WHY NOW</div>
-                <p className="landing-track-text">
-                  Revenue loss rarely happens in one clean step. A payment
-                  degrades, a checkout gets abandoned, a subscription fails.
-                  Most systems either don't retry at all, or retry blindly
-                  without understanding why it failed — this agent closes
-                  the loop from the failure to its documented cause, the
-                  right intervention, and a verified result.
-                </p>
-              </div>
-              <div>
-                <div className="landing-track-label">THE BAR</div>
-                <p className="landing-track-text">
-                  Every recovery action is explainable, bounded and gated:
-                  a fixed policy, hard stopping rules, escalation to support,
-                  and a full audit trail on every decision — evaluated on a
-                  simulated batch, and proven end to end on a real Razorpay
-                  test payment.
-                </p>
-              </div>
-            </div>
+            <p className={`status ${keyChip.cls}`} role="status">
+              <span className="status-dot" aria-hidden="true" />{keyChip.text}
+            </p>
           </div>
-        </RevealSection>
-      </div>
+          <ReceiptPrinter showcase={showcase} onEnterDemo={onEnterDemo} />
+        </section>
 
-      {/* HEADLINE METRICS — from GET /api/evaluation, explicitly labeled */}
-      <div className="landing-inner landing-inner-wide">
-        <RevealSection>
+        <Reveal as="section" className="wrap block" id="evidence" aria-labelledby="evidence-title">
+          <SectionHead id="evidence-title" title="Two kinds of evidence">
+            Everything on this site is one of these two. They never share a number.
+          </SectionHead>
+          <div className="slips">
+            <EvidenceSlip tone="real" title="Real · Razorpay Test Mode" lines={REAL_LINES}
+              foot="One payment, end to end. This is what the live demo produces." />
+            <EvidenceSlip tone="sim" title="Simulated · batch evaluation" lines={SIMULATED_LINES}
+              foot="Measures the agent's decisions at scale. Never shown as money recovered." />
+          </div>
+        </Reveal>
+
+        <Reveal as="section" className="wrap block" id="evaluation" aria-labelledby="evaluation-title">
+          <SectionHead id="evaluation-title" title="The batch evaluation">
+            The same agent, run on 500 seeded batches. The rate below is simulated; the
+            safety-gate counts are what the policy did.
+          </SectionHead>
           <HeadlineMetrics />
-        </RevealSection>
-      </div>
+          <button className="btn btn-ghost block-cta" onClick={onEnterDashboard}>Run a batch yourself</button>
+        </Reveal>
 
-      {/* HOW IT WORKS — horizontal agent journey */}
-      <div className="landing-inner landing-inner-wide" id="how-it-works">
-        <RevealSection>
-          <div className="landing-section-title">How the agent thinks</div>
-          <p className="landing-journey-intro">
-            Every step is bounded — the agent can only act on data it was
-            actually given, and every stage has a condition that stops it cold.
-          </p>
-        </RevealSection>
-        <RevealSection delay={40}>
+        <Reveal as="section" className="wrap block" id="how-it-works" aria-labelledby="how-title">
+          <SectionHead id="how-title" title="How a failure is handled">
+            Six controls, in order. Each one acts only on data it was given, and each
+            has a condition that stops the case.
+          </SectionHead>
           <AgentJourney />
-        </RevealSection>
-      </div>
+        </Reveal>
 
-      {/* AUDIT TRAIL — every decision, timestamped */}
-      <div className="landing-inner" id="audit-trail">
-        <RevealSection>
-          <div className="landing-section-title">Every decision, timestamped</div>
-          <p className="landing-journey-intro">
-            The safety gate and every action taken are logged as they
-            happen — nothing is retroactively summarized.
-          </p>
-        </RevealSection>
-        <RevealSection delay={40}>
+        <Reveal as="section" className="wrap block" id="audit-tape" aria-labelledby="tape-title">
+          <SectionHead id="tape-title" title="The audit tape">
+            Every step of the recorded case above, as the agent logged it.
+          </SectionHead>
           <AuditTrailVisual showcase={showcase} />
-        </RevealSection>
-      </div>
+        </Reveal>
+      </main>
 
-      {/* REAL VS SIMULATED — the two kinds of evidence, side by side */}
-      <div className="landing-inner landing-inner-wide" id="provenance">
-        <RevealSection>
-          <div className="landing-section-title">Real vs simulated</div>
-          <p className="landing-journey-intro">
-            This project produces two different kinds of evidence. They are
-            never presented as the same thing.
-          </p>
-        </RevealSection>
-
-        <div className="compare-grid">
-          <RevealSection delay={0}>
-            <div className="compare-card compare-card-real">
-              <div className="compare-card-badge">
-                <span className="compare-card-dot" />
-                REAL RAZORPAY TEST MODE
-              </div>
-              <div className="compare-card-flow">
-                <span>1 payment</span>
-                <span className="compare-arrow">→</span>
-                <span>actual failure</span>
-                <span className="compare-arrow">→</span>
-                <span>actual error</span>
-                <span className="compare-arrow">→</span>
-                <span>actual recovery</span>
-              </div>
-              <p className="compare-card-body">
-                A single real Razorpay order, a real Checkout failure using
-                their documented test card, and a real recovery payment on a
-                recovery order the server creates. Order, payment and error
-                data come from Razorpay's API; a recovery counts only when
-                Razorpay reports it captured and Checkout's signature verifies.
-              </p>
-            </div>
-          </RevealSection>
-
-          <RevealSection delay={90}>
-            <div className="compare-card compare-card-simulated">
-              <div className="compare-card-badge">
-                <span className="compare-card-dot" />
-                BATCH EVALUATION (SIMULATED)
-              </div>
-              <div className="compare-card-flow">
-                <span>synthetic cases</span>
-                <span className="compare-arrow">→</span>
-                <span>agent decisions</span>
-                <span className="compare-arrow">→</span>
-                <span>simulated recovery outcomes</span>
-              </div>
-              <p className="compare-card-body">
-                Orders can be real, but failure reasons are synthetically
-                assigned and recovery outcomes come from a probability
-                model — useful for measuring the agent's decisions at
-                scale, never presented as money actually recovered.
-              </p>
-            </div>
-          </RevealSection>
+      <footer className="site-footer wrap">
+        <p>Built for the Razorpay Buildathon (Track 3). Test mode only; no real money moves.</p>
+        <div className="site-footer-links">
+          <a href="mailto:talwarritvik2840@gmail.com">talwarritvik2840@gmail.com</a>
+          <a href="https://www.linkedin.com/in/ritvik-talwar-3b78372a1" target="_blank" rel="noreferrer">LinkedIn</a>
+          <a href="https://github.com/ritvik302005" target="_blank" rel="noreferrer">GitHub</a>
         </div>
-
-        <RevealSection delay={150}>
-          <div className="compare-disclaimer">
-            We never blend simulated recovery value with real Razorpay payment outcomes.
-          </div>
-        </RevealSection>
-      </div>
-
-      <div className="landing-inner">
-        <RevealSection>
-          <footer className="landing-footer">
-            <div className="landing-footer-note">
-              Every decision is logged with full reasoning. Real Razorpay
-              data and simulated recovery outcomes are never blended into
-              one number.
-            </div>
-            <a className="landing-footer-email" href="mailto:talwarritvik2840@gmail.com">
-              <span className="footer-icon" aria-hidden="true">✉</span>
-              talwarritvik2840@gmail.com
-            </a>
-            <div className="landing-footer-links">
-              <a href="https://www.linkedin.com/in/ritvik-talwar-3b78372a1" target="_blank" rel="noreferrer">
-                <svg className="footer-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5.4 3.7a2.1 2.1 0 1 1-4.2 0 2.1 2.1 0 0 1 4.2 0ZM1.5 8h3.8v12H1.5V8Zm6.2 0h3.7v1.6h.1c.5-1 1.8-2 3.8-2 4.1 0 4.8 2.6 4.8 6.1V20h-3.8v-5.6c0-1.3 0-3.1-2-3.1s-2.2 1.5-2.2 3V20H7.7V8Z" /></svg>
-                LinkedIn
-              </a>
-              <a href="https://github.com/ritvik302005" target="_blank" rel="noreferrer">
-                <svg className="footer-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 1.5a10.5 10.5 0 0 0-3.3 20.47c.53.1.72-.23.72-.51v-2c-2.94.64-3.56-1.25-3.56-1.25-.48-1.22-1.17-1.54-1.17-1.54-.96-.66.07-.64.07-.64 1.06.08 1.62 1.09 1.62 1.09.94 1.62 2.47 1.15 3.07.88.1-.68.37-1.15.67-1.42-2.35-.27-4.82-1.18-4.82-5.24 0-1.16.41-2.1 1.09-2.85-.11-.27-.47-1.35.1-2.81 0 0 .89-.29 2.89 1.09a10.1 10.1 0 0 1 5.27 0c2-1.38 2.89-1.09 2.89-1.09.57 1.46.21 2.54.1 2.81.68.75 1.09 1.69 1.09 2.85 0 4.07-2.48 4.96-4.84 5.23.38.33.72.97.72 1.95v2.89c0 .28.19.62.73.51A10.5 10.5 0 0 0 12 1.5Z" /></svg>
-                GitHub
-              </a>
-            </div>
-          </footer>
-          <div className="landing-cta-row" style={{ marginTop: 24 }}>
-            <button className="run-btn landing-cta" onClick={onEnterDashboard}>
-              Open Dashboard →
-            </button>
-          </div>
-        </RevealSection>
-      </div>
+      </footer>
     </div>
   )
 }

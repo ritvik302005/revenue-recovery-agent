@@ -33,7 +33,7 @@ function routes(overrides = {}) {
 }
 
 async function startDemo(user) {
-  await user.click(await screen.findByRole('button', { name: /Start Live Demo/ }))
+  await user.click(await screen.findByRole('button', { name: /Start the live demo/ }))
   await screen.findByText(/Real order created/)
 }
 
@@ -91,7 +91,7 @@ describe('LiveDemo', () => {
     expect(await screen.findByText(/Real failure recorded from Razorpay/)).toBeInTheDocument()
     expect(screen.getByText('bank timeout')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Attempt Real Recovery' }))
+    await user.click(screen.getByRole('button', { name: 'Attempt a real recovery' }))
     expect(await screen.findByText('order_R1')).toBeInTheDocument()
     await act(() => checkout.options.handler({ razorpay_payment_id: 'pay_S1', razorpay_signature: 'sig' }))
     expect(await screen.findByText(/Recovered — verified by Razorpay Test Mode/)).toBeInTheDocument()
@@ -123,6 +123,6 @@ describe('LiveDemo', () => {
     render(<LiveDemo />)
     await startDemo(user)
     await user.click(screen.getByRole('button', { name: 'Cancel and start over' }))
-    expect(screen.getByRole('button', { name: /Start Live Demo/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Start the live demo/ })).toBeInTheDocument()
   })
 })

@@ -1,59 +1,54 @@
-import { useEffect, useState } from 'react'
 import { humanize, parseTimestamp } from '../hooks/useShowcaseCase.js'
+import { useReveal } from '../hooks/useReveal.js'
+import { stampFor } from './ReceiptPrinter.jsx'
 
-const TONES = { classify: 'danger', select_action: 'gold', replan: 'gold', safety_check: 'real', execute: 'default' }
+const TONES = { classify: 'danger', safety_check: 'real' }
 
-// The recorded case's real audit trail, with times relative to its first
-// entry. Rows reveal once; nothing loops or pretends to be live.
+// The recorded case's real audit trail, printed as a tape. Times are
+// relative to the first entry. Lines print once, when the tape scrolls
+// into view; nothing loops or pretends to be live.
 export default function AuditTrailVisual({ showcase }) {
+  const [ref, inView] = useReveal(0.1)
   const { status, data } = showcase
   const entries = status === 'ready' && data.kind !== 'none' ? data.audit_trail : []
-  const [visibleCount, setVisibleCount] = useState(0)
-
-  useEffect(() => {
-    if (visibleCount >= entries.length) return
-    const timer = setTimeout(() => setVisibleCount((count) => count + 1), 450)
-    return () => clearTimeout(timer)
-  }, [visibleCount, entries.length])
 
   if (!entries.length) {
     return (
-      <div className="audit-trail-visual audit-trail-ledger">
-        <div className="audit-trail-header"><span><i className="audit-trail-header-dot" />CASE LEDGER</span></div>
-        <p className="recovery-case-note">
+      <div className="tape" ref={ref}>
+        <div className="tape-head"><span>Audit tape</span></div>
+        <p className="tape-empty">
           {status === 'loading'
             ? 'Loading the recorded audit trail…'
-            : 'No recorded case yet. Once a live demo (or batch run) completes, its full audit trail appears here.'}
+            : 'No recorded case yet. When a live demo or a batch run completes, its full audit trail prints here.'}
         </p>
       </div>
     )
   }
 
   const start = parseTimestamp(entries[0].timestamp).getTime()
-  const offset = (entry) => `+${Math.round((parseTimestamp(entry.timestamp).getTime() - start) / 1000)}s`
+  const offset = (entry) => `+${((parseTimestamp(entry.timestamp).getTime() - start) / 1000).toFixed(2)}s`
+  const stamp = stampFor(data)
 
   return (
-    <div className="audit-trail-visual audit-trail-ledger">
-      <div className="audit-trail-header">
-        <span><i className="audit-trail-header-dot" />CASE LEDGER</span>
-        <small>CASE {data.payment_id}</small>
+    <div className={`tape ${inView ? 'is-printed' : ''}`} ref={ref}>
+      <div className="tape-head">
+        <span>Audit tape</span>
+        <span className="tape-case">{data.payment_id}</span>
       </div>
-      <div className="audit-trail-decision">
-        <span>Final outcome</span>
-        <strong>{humanize(data.outcome)}</strong>
-        <em>{data.outcome_is_simulated ? 'Simulated outcome' : 'Verified by Razorpay'}</em>
-      </div>
-      <div className="audit-trail-list">
-        {entries.map((entry, index) => {
-          const shown = index < visibleCount
-          return (
-            <div key={index} className={`audit-trail-row tone-${TONES[entry.step] || 'default'} ${shown ? 'audit-trail-row-shown' : ''} ${index === visibleCount - 1 ? 'audit-trail-row-current' : ''}`}>
-              <div className="audit-trail-time">{shown ? offset(entry) : '+—s'}</div>
-              <div className="audit-trail-connector"><span className="audit-trail-dot" />{index < entries.length - 1 && <span className="audit-trail-line" />}</div>
-              <div className="audit-trail-label"><strong>{humanize(entry.step)}</strong><small>{entry.detail}</small></div>
-            </div>
-          )
-        })}
+      <ol className="tape-lines">
+        {entries.map((entry, index) => (
+          <li key={index} className={`tape-line is-${TONES[entry.step] || 'plain'}`} style={{ '--i': index }}>
+            <span className="tape-time">{offset(entry)}</span>
+            <span className="tape-step">{humanize(entry.step)}</span>
+            <span className="tape-detail">{entry.detail}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="tape-foot">
+        <span>End of tape · outcome: {humanize(data.outcome)}</span>
+        <span className={`tape-verdict tone-${stamp.tone}`}>
+          {data.outcome_is_simulated ? 'Simulated outcome' : 'Reported by Razorpay'}
+        </span>
       </div>
     </div>
   )

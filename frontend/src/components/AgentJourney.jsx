@@ -1,38 +1,61 @@
-import { useEffect, useState } from 'react'
+import { useRef, useState } from 'react'
 
 const STAGES = [
-  { num: '01', title: 'Detect', eyebrow: 'Signal', input: 'A Razorpay payment event — real Checkout failure in the live demo, a synthetic record in the batch.', action: 'Opens a recovery case only when a payment does not succeed.', stop: 'No payment failure means no case and no downstream action.' },
-  { num: '02', title: 'Diagnose', eyebrow: 'Evidence', input: 'The payment’s Razorpay error code and metadata.', action: 'Maps the raw error to a known, documented failure reason.', stop: 'Unknown errors are escalated rather than guessed.' },
-  { num: '03', title: 'Decide', eyebrow: 'Policy', input: 'The diagnosed reason and a fixed strategy table.', action: 'Selects the allowed recovery option for that failure type.', stop: 'No matching policy means an escalation, never improvisation.' },
-  { num: '04', title: 'Safety Gate', eyebrow: 'Control', input: 'Proposed action plus the payment’s attempt history.', action: 'Enforces hard checks before any recovery action is permitted.', stop: 'Fraud flags and exhausted retry budgets block the case outright.' },
-  { num: '05', title: 'Act', eyebrow: 'Execution', input: 'Only a gate-approved action.', action: 'Runs the approved intervention or routes it to support.', stop: 'The escalation ceiling prevents endless retry loops.' },
-  { num: '06', title: 'Verify', eyebrow: 'Proof', input: 'The final payment status from Razorpay’s API.', action: 'In the live demo, counts recovery only when Razorpay reports the payment captured and the Checkout signature verifies. Batch outcomes are simulated.', stop: 'Any other status remains unresolved; it is never called recovered.' },
+  { title: 'Detect', eyebrow: 'Signal', input: 'A Razorpay payment event: a real Checkout failure in the live demo, a synthetic record in the batch.', action: 'Opens a recovery case only when a payment does not succeed.', stop: 'No payment failure means no case and no downstream action.' },
+  { title: 'Diagnose', eyebrow: 'Evidence', input: 'The payment’s Razorpay error code and metadata.', action: 'Maps the raw error to a known, documented failure reason.', stop: 'Unknown errors are escalated rather than guessed.' },
+  { title: 'Decide', eyebrow: 'Policy', input: 'The diagnosed reason and a fixed strategy table.', action: 'Selects the allowed recovery option for that failure type.', stop: 'No matching policy means an escalation, never improvisation.' },
+  { title: 'Safety gate', eyebrow: 'Control', input: 'Proposed action plus the payment’s attempt history.', action: 'Enforces hard checks before any recovery action is permitted.', stop: 'Fraud flags and exhausted retry budgets block the case outright.' },
+  { title: 'Act', eyebrow: 'Execution', input: 'Only a gate-approved action.', action: 'Runs the approved intervention or routes it to support.', stop: 'The escalation ceiling prevents endless retry loops.' },
+  { title: 'Verify', eyebrow: 'Proof', input: 'The final payment status from Razorpay’s API.', action: 'In the live demo, counts a recovery only when Razorpay reports the payment captured and the Checkout signature verifies. Batch outcomes are simulated.', stop: 'Any other status stays unresolved; it is never called recovered.' },
 ]
 
+// The six controls in order (a real sequence, so they're numbered). A tab
+// list: click, focus or arrow keys select one. No autoplay.
 export default function AgentJourney() {
   const [active, setActive] = useState(0)
-  const activeStage = STAGES[active]
+  const tabs = useRef([])
+  const stage = STAGES[active]
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setActive((current) => (current + 1) % STAGES.length), 2800)
-    return () => window.clearInterval(timer)
-  }, [])
+  function onKeyDown(e) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]
+    let next = step === undefined ? null : (active + step + STAGES.length) % STAGES.length
+    if (e.key === 'Home') next = 0
+    if (e.key === 'End') next = STAGES.length - 1
+    if (next === null) return
+    e.preventDefault()
+    setActive(next)
+    tabs.current[next]?.focus()
+  }
 
   return (
-    <div className="journey journey-board">
-      <div className="journey-board-head"><span>RECOVERY CONTROL BOARD</span><small>Choose a control to inspect its boundary</small></div>
-      <div className="journey-board-grid">
-        {STAGES.map((stage, index) => (
-          <button key={stage.num} className={`journey-board-card ${active === index ? 'is-active' : ''}`} onMouseEnter={() => setActive(index)} onFocus={() => setActive(index)} onClick={() => setActive(index)}>
-            <span className="journey-board-number">{stage.num}</span><span className="journey-board-eyebrow">{stage.eyebrow}</span><strong>{stage.title}</strong>
+    <div className="controls">
+      <div className="controls-list" role="tablist" aria-label="Recovery controls" aria-orientation="vertical" onKeyDown={onKeyDown}>
+        {STAGES.map((s, index) => (
+          <button
+            key={s.title}
+            ref={(el) => { tabs.current[index] = el }}
+            role="tab"
+            id={`control-tab-${index}`}
+            aria-selected={active === index}
+            aria-controls="control-panel"
+            tabIndex={active === index ? 0 : -1}
+            className="control-tab"
+            onClick={() => setActive(index)}
+            onMouseEnter={() => setActive(index)}
+          >
+            <span className="control-num">{String(index + 1).padStart(2, '0')}</span>
+            <span className="control-name">{s.title}</span>
+            <span className="control-eyebrow">{s.eyebrow}</span>
           </button>
         ))}
       </div>
-      <div className="journey-detail journey-board-detail">
-        <div className="journey-detail-title"><span>{activeStage.num}</span>{activeStage.title}</div>
-        <div className="journey-detail-row"><div className="journey-detail-label">Evidence used</div><div className="journey-detail-text">{activeStage.input}</div></div>
-        <div className="journey-detail-row"><div className="journey-detail-label">Control applied</div><div className="journey-detail-text">{activeStage.action}</div></div>
-        <div className="journey-detail-row"><div className="journey-detail-label">Hard boundary</div><div className="journey-detail-text journey-detail-stop">{activeStage.stop}</div></div>
+      <div className="control-panel" role="tabpanel" id="control-panel" aria-labelledby={`control-tab-${active}`}>
+        <h3 className="control-panel-title"><span>{String(active + 1).padStart(2, '0')}</span>{stage.title}</h3>
+        <dl className="control-facts">
+          <div><dt>Evidence used</dt><dd>{stage.input}</dd></div>
+          <div><dt>Control applied</dt><dd>{stage.action}</dd></div>
+          <div className="is-stop"><dt>Hard boundary</dt><dd>{stage.stop}</dd></div>
+        </dl>
       </div>
     </div>
   )

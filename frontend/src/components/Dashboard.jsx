@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import MetricsSection from './MetricsSection.jsx'
 import ResultsTable from './ResultsTable.jsx'
 import { apiFetch } from '../api.js'
+import SiteNav from './SiteNav.jsx'
 
 const MAX_BATCH_SIZE = 500        // backend: n ≤ 500
 const MAX_SEED = 2 ** 31 - 1      // backend: 0 ≤ seed ≤ 2^31 − 1
@@ -24,7 +25,7 @@ function describeRun(metrics) {
     'Recovery outcomes are simulated; the same seed reproduces the same run.'
 }
 
-export default function Dashboard({ onBack }) {
+export default function Dashboard({ navigate }) {
   const [metrics, setMetrics] = useState(null)
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
@@ -80,81 +81,54 @@ export default function Dashboard({ onBack }) {
   }
 
   return (
-    <div className="app">
-      <div className="header">
-        <div>
-          {onBack && (
-            <button className="back-link" onClick={onBack}>
-              ← Back to Overview
-            </button>
-          )}
-          <h1 className="title">AI Revenue Recovery Agent — Batch Evaluation</h1>
-          <p className="subtitle">{describeRun(metrics)}</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <label style={{ display: 'grid', gap: 4, fontSize: 11, color: 'var(--text-dim)' }}>
-            Batch size
-            <input
-              type="number"
-              min={1}
-              max={MAX_BATCH_SIZE}
-              step={1}
-              value={batchSize}
-              onChange={(e) => setBatchSize(Number(e.target.value))}
-              style={{
-                width: 70, padding: '10px 8px', borderRadius: 8,
-                border: '1px solid #332c22', background: '#1f1a15', color: '#f0e6d6'
-              }}
-            />
+    <div className="site">
+      <SiteNav current="dashboard" navigate={navigate} />
+      <main id="main" className="page wrap">
+        <header className="page-head">
+          <p className="eyebrow">Batch evaluation · simulated outcomes</p>
+          <h1 className="display page-title">Run the agent on a batch</h1>
+          <p className="page-lede">{describeRun(metrics)}</p>
+        </header>
+
+        {/* noValidate: runBatch() checks the limits and shows one clear message */}
+        <form className="run-form" noValidate onSubmit={(e) => { e.preventDefault(); runBatch() }}>
+          <label className="field">
+            <span>Batch size</span>
+            <input className="input" type="number" min={1} max={MAX_BATCH_SIZE} step={1}
+                   value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))} />
           </label>
-          <label style={{ display: 'grid', gap: 4, fontSize: 11, color: 'var(--text-dim)' }}>
-            Seed
-            <input
-              type="number"
-              min={0}
-              max={MAX_SEED}
-              step={1}
-              value={seed}
-              onChange={(e) => setSeed(Number(e.target.value))}
-              style={{
-                width: 80, padding: '10px 8px', borderRadius: 8,
-                border: '1px solid #332c22', background: '#1f1a15', color: '#f0e6d6'
-              }}
-            />
+          <label className="field">
+            <span>Seed</span>
+            <input className="input input-wide" type="number" min={0} max={MAX_SEED} step={1}
+                   value={seed} onChange={(e) => setSeed(Number(e.target.value))} />
           </label>
-          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--text-dim)', maxWidth: 190 }}>
+          <label className="check">
             <input type="checkbox" checked={liveOrders} onChange={(e) => setLiveOrders(e.target.checked)} />
-            Create real Razorpay test orders (first 5 only)
+            <span>Create real Razorpay test orders (first 5 only)</span>
           </label>
-          <button className="run-btn" onClick={runBatch} disabled={loading}>
-            {loading ? 'Running…' : 'Run Batch'}
+          <button className="btn btn-paper" type="submit" disabled={loading}>
+            {loading ? 'Running…' : 'Run batch'}
           </button>
-        </div>
-      </div>
+        </form>
 
-      {error && (
-        <div className="section" style={{ borderColor: '#c05b4d', color: '#c05b4d' }}>
-          {error}
-        </div>
-      )}
+        {error && <div className="alert" role="alert">{error}</div>}
 
-      {!metrics && !loading && checkedSaved && (
-        <div className="empty-state">
-          No batch run yet. Click "Run Batch" to generate a set of failed
-          payments and let the agent classify, decide, and act on them.
-        </div>
-      )}
+        {!metrics && !loading && checkedSaved && (
+          <p className="empty">
+            No batch has been run yet. Choose a size and a seed, then run one: the agent
+            classifies, decides and acts on each synthetic failed payment.
+          </p>
+        )}
 
-      {loading && !metrics && (
-        <div className="empty-state loading">Running agent across batch…</div>
-      )}
+        {loading && !metrics && <p className="empty">Running the agent across the batch…</p>}
 
-      {metrics && !metrics.error && (
-        <>
-          <MetricsSection metrics={metrics} />
-          <ResultsTable results={results} />
-        </>
-      )}
+        {metrics && !metrics.error && (
+          <>
+            <MetricsSection metrics={metrics} />
+            <ResultsTable results={results} />
+          </>
+        )}
+      </main>
     </div>
   )
 }
