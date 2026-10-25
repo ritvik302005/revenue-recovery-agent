@@ -1,22 +1,24 @@
 """
 FastAPI application for the AI Revenue Recovery agent.
 
-Endpoints:
+Endpoints (full table in docs/ARCHITECTURE.md):
+  POST /api/session         - short-lived token for the endpoints that act
   POST /api/batch/run       - generate a batch and run the recovery agent on it
   GET  /api/batch/results   - fetch the last run's results
   GET  /api/batch/metrics   - summary metrics, split real vs simulated
-  GET  /api/health          - basic health check + Razorpay connectivity status
+  GET  /api/evaluation      - the published multi-seed evaluation
+  GET  /api/showcase/case   - one real recorded case for the landing page
+  GET  /api/health          - basic health check
+  /api/live-demo/*          - the real Razorpay Test Mode flow
 """
-from fastapi import FastAPI, Query, HTTPException, Header, Request, Depends
+from fastapi import FastAPI, Query, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import json
 import os
-import time
-from collections import defaultdict
 
 from models import RazorpaySource, Outcome, LiveDemoResult, AuditLogEntry, RecoveryResult, LiveDemoStage, FailureReason
-from simulate_batch import generate_batch
+from simulate_batch import generate_batch, MAX_LIVE_ORDERS_PER_BATCH
 from recovery_agent import run_recovery, select_recovery_action, safety_check, AgentState, MAX_ATTEMPTS
 from razorpay_client import (
     RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET,
@@ -27,6 +29,7 @@ from pydantic import BaseModel, Field, ValidationError
 import logging
 import uuid
 import razorpay.errors
+import access
 import storage
 
 logger = logging.getLogger(__name__)
@@ -48,40 +51,22 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-API-Key"],
+    allow_headers=["Content-Type", "X-Session-Token"],
 )
 
-# ---- API-key authorization ----
-# Set API_KEY in the environment to require it on state-changing
-# endpoints (order creation, batch runs, live-demo reporting). If unset
-# (e.g. local dev), these endpoints stay open — same as before.
-API_KEY = os.environ.get("API_KEY")
+# ---- Access and rate limits (P5-1, P5-2): see access.py ----
+# Every endpoint that calls Razorpay or does heavy work needs a session
+# token from POST /api/session and is rate limited per client IP.
+limit_sessions = Depends(access.rate_limit("session", 10))
+limit_orders = Depends(access.rate_limit("orders", 10))
+limit_reports = Depends(access.rate_limit("reports", 30))
+limit_batches = Depends(access.rate_limit("batches", 10))
 
 
-def require_api_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Missing or invalid API key.")
-
-
-# ---- Rate limiting ----
-# Simple in-memory sliding-window limiter, per client IP, for the
-# order-creation endpoints (each call hits Razorpay's real API). Good
-# enough for a single-process deployment; swap for a shared store
-# (e.g. Redis) if this ever runs behind multiple workers/instances.
-_rate_limit_buckets: dict[str, list] = defaultdict(list)
-RATE_LIMIT_MAX_REQUESTS = 10
-RATE_LIMIT_WINDOW_SECONDS = 60
-
-
-def rate_limit(request: Request):
-    now = time.time()
-    client_ip = request.client.host if request.client else "unknown"
-    bucket = _rate_limit_buckets[client_ip]
-    while bucket and bucket[0] < now - RATE_LIMIT_WINDOW_SECONDS:
-        bucket.pop(0)
-    if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
-        raise HTTPException(status_code=429, detail="Too many requests — please slow down and try again shortly.")
-    bucket.append(now)
+def _require_owner(record: dict, token: str, order_id: str) -> None:
+    """A live-demo session can only be driven by the token that created it."""
+    if record.get("owner") != access.owner_of(token):
+        raise HTTPException(status_code=403, detail=f"Order '{order_id}' belongs to a different session.")
 
 
 # ---- Razorpay errors shown to the browser ----
@@ -135,13 +120,22 @@ def health():
     }
 
 
-@app.post("/api/batch/run", dependencies=[Depends(require_api_key), Depends(rate_limit)])
+@app.post("/api/session", dependencies=[limit_sessions])
+def create_session():
+    """A short-lived token for the endpoints below (X-Session-Token)."""
+    return access.issue_session()
+
+
+@app.post("/api/batch/run", dependencies=[limit_batches])
 def run_batch(n: int = Query(60, ge=1, le=500), try_live_orders: bool = Query(False),
-              seed: int = Query(DEFAULT_BATCH_SEED, ge=0, le=2**31 - 1)):
+              seed: int = Query(DEFAULT_BATCH_SEED, ge=0, le=2**31 - 1),
+              token: str = Depends(access.require_session)):
     """Same seed -> same synthetic batch and same simulated outcomes.
     try_live_orders (off by default) creates real test orders for at most
-    MAX_LIVE_ORDERS_PER_BATCH records and stops at the first failure."""
-    batch = generate_batch(n=n, seed=seed, try_live_orders=try_live_orders)
+    MAX_LIVE_ORDERS_PER_BATCH records, within the session's and today's
+    order budget, and stops at the first failure."""
+    live_slots = access.reserve_orders(token, MAX_LIVE_ORDERS_PER_BATCH) if try_live_orders else 0
+    batch = generate_batch(n=n, seed=seed, try_live_orders=live_slots > 0, max_live_orders=live_slots)
     results = [run_recovery(p) for p in batch]
     _save_last_results(results, seed)
     return {"count": len(results), "seed": seed, "results": [r.model_dump(mode="json") for r in results]}
@@ -376,8 +370,8 @@ def live_demo_config():
     }
 
 
-@app.post("/api/live-demo/create-order", dependencies=[Depends(require_api_key), Depends(rate_limit)])
-def create_demo_order(req: CreateDemoOrderRequest):
+@app.post("/api/live-demo/create-order", dependencies=[limit_orders])
+def create_demo_order(req: CreateDemoOrderRequest, token: str = Depends(access.require_session)):
     """
     REAL Razorpay Orders API call. The frontend takes the returned
     order_id and opens actual Razorpay Checkout against it.
@@ -385,18 +379,22 @@ def create_demo_order(req: CreateDemoOrderRequest):
     The receipt is generated server-side — the browser has no way to
     influence what gets sent to Razorpay as the receipt value.
     """
+    access.require_orders(token)
     receipt = f"live_demo_{uuid.uuid4().hex[:16]}"
     try:
         order = create_real_order(amount=req.amount, receipt=receipt)
     except Exception as e:
+        access.refund_orders(token, 1)
         raise _razorpay_error("create a real Razorpay order", e)
-    _set_demo_record(order["id"], {"amount": req.amount, "stage": LiveDemoStage.ORDER_CREATED.value})
+    _set_demo_record(order["id"], {"amount": req.amount, "stage": LiveDemoStage.ORDER_CREATED.value,
+                                   "owner": access.owner_of(token)})
     return order
 
 
-@app.post("/api/live-demo/report-failure", dependencies=[Depends(require_api_key)])
+@app.post("/api/live-demo/report-failure", dependencies=[limit_reports])
 def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
-                   payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN)):
+                   payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN),
+                   token: str = Depends(access.require_session)):
     """
     Called after the user completes Checkout with a FAILING test
     instrument. Fetches the REAL payment object from Razorpay, maps
@@ -408,6 +406,7 @@ def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
     # Fast check before calling Razorpay; re-checked atomically when the
     # stage is written below, so a replay can't slip in between.
     order_record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.ORDER_CREATED})
+    _require_owner(order_record, token, order_id)
 
     try:
         payment = fetch_real_payment(payment_id)
@@ -483,8 +482,9 @@ def report_failure(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
     }
 
 
-@app.post("/api/live-demo/create-recovery-order", dependencies=[Depends(require_api_key), Depends(rate_limit)])
-def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
+@app.post("/api/live-demo/create-recovery-order", dependencies=[limit_orders])
+def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
+                          token: str = Depends(access.require_session)):
     """
     Creates the recovery order for a recorded failure — server-side, for
     the original amount — and binds it to the session. report-recovery
@@ -493,6 +493,7 @@ def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
     """
     retryable = {LiveDemoStage.FAILURE_RECORDED, LiveDemoStage.RECOVERY_FAILED}
     record = _require_stage(_get_demo_record(order_id), order_id, retryable)
+    _require_owner(record, token, order_id)
 
     # The same hard safety gate the batch agent uses, with the recovery
     # attempts made so far: once MAX_ATTEMPTS are used, no new order.
@@ -511,10 +512,12 @@ def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
             detail=f"Safety gate blocked another recovery attempt: {attempts} of {MAX_ATTEMPTS} attempts used.",
         )
 
+    access.require_orders(token)
     receipt = f"live_recovery_{uuid.uuid4().hex[:16]}"
     try:
         order = create_real_order(amount=record["amount"], receipt=receipt)
     except Exception as e:
+        access.refund_orders(token, 1)
         raise _razorpay_error("create a real Razorpay recovery order", e)
 
     _transition(order_id, retryable, lambda record: {
@@ -530,11 +533,12 @@ def create_recovery_order(order_id: str = Query(..., pattern=ORDER_ID_PATTERN)):
     return order
 
 
-@app.post("/api/live-demo/report-recovery", dependencies=[Depends(require_api_key)])
+@app.post("/api/live-demo/report-recovery", dependencies=[limit_reports])
 def report_recovery(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
                     recovery_payment_id: str = Query(..., pattern=PAYMENT_ID_PATTERN),
                     recovery_order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
-                    razorpay_signature: Optional[str] = Query(None, max_length=128)):
+                    razorpay_signature: Optional[str] = Query(None, max_length=128),
+                    token: str = Depends(access.require_session)):
     """
     Called after the user completes the recovery Checkout on the order
     from /create-recovery-order. Fetches the real payment status — this
@@ -546,6 +550,7 @@ def report_recovery(order_id: str = Query(..., pattern=ORDER_ID_PATTERN),
     fetched status alone.
     """
     record = _require_stage(_get_demo_record(order_id), order_id, {LiveDemoStage.RECOVERY_ORDER_CREATED})
+    _require_owner(record, token, order_id)
     if recovery_order_id != record.get("current_recovery_order_id") or recovery_order_id == order_id:
         raise HTTPException(
             status_code=400,

@@ -5,7 +5,7 @@ that contract at the API boundary, not just in code comments.
 """
 from unittest.mock import patch
 
-from conftest import sign
+from conftest import sign, owner
 
 
 def test_metrics_labels_recovery_as_simulated_not_real(client):
@@ -101,6 +101,7 @@ def test_live_demo_result_is_never_labeled_simulated(client, isolated_state_db):
 
     main._set_demo_record("order_live", {
         "amount": 1000,
+        "owner": owner(client),
         "stage": "recovery_order_created",
         "current_recovery_order_id": "order_R",
         "original_payment_id": "pay_original",

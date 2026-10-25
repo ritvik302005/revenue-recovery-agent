@@ -283,7 +283,8 @@ def test_two_simultaneous_recovery_reports_record_only_one(recovery_ready, isola
     def submit():
         try:
             main.report_recovery(order_id="order_A", recovery_payment_id="pay_ok", recovery_order_id="order_R1",
-                                 razorpay_signature=sign("order_R1", "pay_ok"))
+                                 razorpay_signature=sign("order_R1", "pay_ok"),
+                                 token=recovery_ready.headers["X-Session-Token"])
             outcomes.append(200)
         except HTTPException as e:
             outcomes.append(e.status_code)

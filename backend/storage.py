@@ -121,6 +121,15 @@ def delete_value(key: str) -> None:
         conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
 
 
+def purge_expired() -> None:
+    """Drop expired rows. SQLite only deletes an expired key when it is
+    read, and rate-limit keys are never read again; Redis expires keys itself."""
+    if _redis_client:
+        return
+    with _sqlite_conn() as conn:
+        conn.execute("DELETE FROM kv_store WHERE expires_at IS NOT NULL AND expires_at < ?", (time.time(),))
+
+
 def _live_row(conn: sqlite3.Connection, key: str) -> Optional[dict]:
     """Current value for `key` inside an open transaction, None if missing or expired."""
     row = conn.execute("SELECT value, expires_at FROM kv_store WHERE key = ?", (key,)).fetchone()

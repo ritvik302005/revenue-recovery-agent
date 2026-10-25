@@ -36,6 +36,7 @@ export default function Dashboard({ onBack }) {
     try {
       const runData = await apiFetch('/api/batch/run', {
         method: 'POST',
+        session: true,
         params: { n: batchSize, seed, try_live_orders: liveOrders },
       })
       setResults(runData.results)

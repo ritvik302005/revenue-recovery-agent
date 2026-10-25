@@ -5,16 +5,17 @@ original amount, in the expected currency.
 """
 from unittest.mock import patch
 
-from conftest import sign
+from conftest import sign, owner
 
 
-def _seed_failure_recorded(main, order_id="order_A", amount=1000, recovery_order_id="order_R"):
+def _seed_failure_recorded(main, client, order_id="order_A", amount=1000, recovery_order_id="order_R"):
     """Directly seed a live-demo record in the 'recovery_order_created'
     stage, as /report-failure followed by /create-recovery-order would
     have left it (recovery order bound to the session), so tests can
     call /report-recovery without going through the full Checkout flow."""
     main._set_demo_record(order_id, {
         "amount": amount,
+        "owner": owner(client),
         "stage": "recovery_order_created",
         "current_recovery_order_id": recovery_order_id,
         "original_payment_id": "pay_original",
@@ -28,7 +29,7 @@ def _seed_failure_recorded(main, order_id="order_A", amount=1000, recovery_order
 
 def test_recovery_rejected_when_payment_belongs_to_different_order(client, isolated_state_db):
     main = isolated_state_db
-    _seed_failure_recorded(main, order_id="order_A", amount=1000)
+    _seed_failure_recorded(main, client, order_id="order_A", amount=1000)
 
     wrong_order_payment = {"order_id": "order_UNRELATED", "amount": 1000, "currency": "INR", "status": "captured"}
     with patch("main.fetch_real_payment", return_value=wrong_order_payment):
@@ -42,7 +43,7 @@ def test_recovery_rejected_when_payment_belongs_to_different_order(client, isola
 
 def test_recovery_rejected_when_amount_does_not_match(client, isolated_state_db):
     main = isolated_state_db
-    _seed_failure_recorded(main, order_id="order_A", amount=1000)
+    _seed_failure_recorded(main, client, order_id="order_A", amount=1000)
 
     wrong_amount_payment = {"order_id": "order_R", "amount": 50000, "currency": "INR", "status": "captured"}
     with patch("main.fetch_real_payment", return_value=wrong_amount_payment):
@@ -56,7 +57,7 @@ def test_recovery_rejected_when_amount_does_not_match(client, isolated_state_db)
 
 def test_recovery_rejected_on_currency_mismatch(client, isolated_state_db):
     main = isolated_state_db
-    _seed_failure_recorded(main, order_id="order_A", amount=1000)
+    _seed_failure_recorded(main, client, order_id="order_A", amount=1000)
 
     wrong_currency_payment = {"order_id": "order_R", "amount": 1000, "currency": "USD", "status": "captured"}
     with patch("main.fetch_real_payment", return_value=wrong_currency_payment):
@@ -70,7 +71,7 @@ def test_recovery_rejected_on_currency_mismatch(client, isolated_state_db):
 
 def test_recovery_accepted_when_everything_matches(client, isolated_state_db):
     main = isolated_state_db
-    _seed_failure_recorded(main, order_id="order_A", amount=1000)
+    _seed_failure_recorded(main, client, order_id="order_A", amount=1000)
 
     matching_payment = {"order_id": "order_R", "amount": 1000, "currency": "INR", "status": "captured"}
     with patch("main.fetch_real_payment", return_value=matching_payment):
@@ -101,7 +102,7 @@ def test_recovery_requires_recovery_order_id_parameter(client, isolated_state_db
     happen at all — omitting it must fail fast, not fall back to
     trusting the original order_id."""
     main = isolated_state_db
-    _seed_failure_recorded(main, order_id="order_A", amount=1000)
+    _seed_failure_recorded(main, client, order_id="order_A", amount=1000)
 
     r = client.post(
         "/api/live-demo/report-recovery",

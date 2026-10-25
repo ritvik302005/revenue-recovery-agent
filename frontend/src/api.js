@@ -22,18 +22,49 @@ function errorMessage(body, status) {
   return `The server returned an error (HTTP ${status}).`
 }
 
+// Endpoints that act (create orders, run batches) need a short-lived
+// session token from POST /api/session. It is kept in memory only, so a
+// reload starts a new session.
+let sessionToken = null
+let pendingSession = null
+
+function getSessionToken(fresh = false) {
+  if (fresh) sessionToken = null
+  if (sessionToken) return Promise.resolve(sessionToken)
+  if (!pendingSession) {
+    pendingSession = request('/api/session', { method: 'POST' })
+      .then((data) => { sessionToken = data.token; return sessionToken })
+      .finally(() => { pendingSession = null })
+  }
+  return pendingSession
+}
+
 /**
  * The one way the frontend calls the backend. Resolves with the parsed
  * JSON body; rejects with an ApiError whose message is safe to show.
+ * `session: true` sends the session token, and on a 401 (expired) gets a
+ * new one and retries once.
  *
- *   apiFetch('/api/batch/run', { method: 'POST', params: { n: 60 } })
- *   apiFetch('/api/live-demo/create-order', { method: 'POST', body: { amount: 1000 } })
+ *   apiFetch('/api/batch/run', { method: 'POST', params: { n: 60 }, session: true })
+ *   apiFetch('/api/live-demo/create-order', { method: 'POST', body: { amount: 1000 }, session: true })
  */
-export async function apiFetch(path, { method = 'GET', params, body } = {}) {
+export async function apiFetch(path, { session = false, ...options } = {}) {
+  if (!session) return request(path, options)
+  const token = await getSessionToken()
+  try {
+    return await request(path, options, token)
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 401) throw e
+    return request(path, options, await getSessionToken(true))
+  }
+}
+
+async function request(path, { method = 'GET', params, body } = {}, token = null) {
   const query = params ? `?${new URLSearchParams(params)}` : ''
-  const init = { method }
+  const init = { method, headers: {} }
+  if (token) init.headers['X-Session-Token'] = token
   if (body !== undefined) {
-    init.headers = { 'Content-Type': 'application/json' }
+    init.headers['Content-Type'] = 'application/json'
     init.body = JSON.stringify(body)
   }
 

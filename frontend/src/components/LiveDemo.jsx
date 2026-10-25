@@ -54,6 +54,7 @@ export default function LiveDemo({ onBack }) {
     try {
       const orderData = await apiFetch('/api/live-demo/create-order', {
         method: 'POST',
+        session: true,
         body: { amount: 1000, label: 'live_demo_failure' },
       })
       setOrder(orderData)
@@ -117,6 +118,7 @@ export default function LiveDemo({ onBack }) {
     try {
       const data = await apiFetch('/api/live-demo/report-failure', {
         method: 'POST',
+        session: true,
         params: { order_id: orderId, payment_id: paymentId },
       })
       setFailureInfo(data)
@@ -136,6 +138,7 @@ export default function LiveDemo({ onBack }) {
       // session; report-recovery only accepts a payment on this order.
       const orderData = await apiFetch('/api/live-demo/create-recovery-order', {
         method: 'POST',
+        session: true,
         params: { order_id: order.id },
       })
       setRecoveryOrder(orderData)
@@ -156,7 +159,7 @@ export default function LiveDemo({ onBack }) {
         recovery_payment_id: recoveryPaymentId,
       }
       if (signature) params.razorpay_signature = signature
-      const data = await apiFetch('/api/live-demo/report-recovery', { method: 'POST', params })
+      const data = await apiFetch('/api/live-demo/report-recovery', { method: 'POST', session: true, params })
       setResult(data)
       setStage(STAGES.DONE)
     } catch (e) {

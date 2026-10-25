@@ -37,7 +37,6 @@ def isolated_state_db(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test_state.db"))
     monkeypatch.delenv("REDIS_URL", raising=False)
-    monkeypatch.delenv("API_KEY", raising=False)
 
     import importlib
     import storage
@@ -49,9 +48,29 @@ def isolated_state_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def client(isolated_state_db):
+def anon_client(isolated_state_db):
+    """A client with no session token."""
     from fastapi.testclient import TestClient
     return TestClient(isolated_state_db.app)
+
+
+def new_session_client(main_module):
+    """A client holding its own session token, as the frontend would."""
+    from fastapi.testclient import TestClient
+    c = TestClient(main_module.app)
+    c.headers["X-Session-Token"] = c.post("/api/session").json()["token"]
+    return c
+
+
+def owner(client) -> str:
+    """The owner id a live-demo record created by this client would carry."""
+    import access
+    return access.owner_of(client.headers["X-Session-Token"])
+
+
+@pytest.fixture()
+def client(isolated_state_db):
+    return new_session_client(isolated_state_db)
 
 
 def make_payment(**overrides):

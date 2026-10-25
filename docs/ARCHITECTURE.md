@@ -26,12 +26,13 @@ Stack: Python (FastAPI 0.141, LangGraph 1.2, Pydantic 2, razorpay SDK 2.0) · Re
 
 | File | Role |
 |---|---|
-| `main.py` | All endpoints, CORS, optional API key, in-memory rate limiter, live-demo session logic |
+| `main.py` | All endpoints, CORS, live-demo session logic |
+| `access.py` | Session tokens, order budgets (per session and per day), proxy-aware per-IP rate limits in the shared store (§3a) |
 | `recovery_agent.py` | Agent graph, action table, safety gate, simulated outcome model |
 | `simulate_batch.py` | Seeded synthetic batch; optionally creates real Razorpay orders per record |
 | `razorpay_client.py` | SDK client with timeout adapter; `create_real_order`, `fetch_real_payment`, `classify_real_payment_error`; error taxonomy table |
-| `models.py` | Enums (`FailureReason`, `RecoveryAction`, `Outcome`, `RazorpaySource`, `LiveDemoStage` – unused), Pydantic models |
-| `storage.py` | `set_value` / `get_value` / `delete_value`, optional TTL |
+| `models.py` | Enums (`FailureReason`, `RecoveryAction`, `Outcome`, `RazorpaySource`, `LiveDemoStage`), Pydantic models |
+| `storage.py` | `set_value` / `get_value` / `delete_value`, optional TTL, `update_atomic`, `purge_expired` |
 | `verify_razorpay_connection.py` | Creates one real ₹10 test order to check keys |
 | `evaluate_batch.py` | Multi-seed evaluation of the batch simulation (offline); writes `evaluation/batch_eval.json` |
 | `tests/` | Safety gate, metrics labelling, live-demo integrity (binding, stages, races, retries, signatures), error mapping and id validation, showcase case |
@@ -41,7 +42,6 @@ Frontend files (`frontend/src/`):
 | File | Role |
 |---|---|
 | `App.jsx` | Hand-written routing between the three views |
-| `api.js` | `API_BASE` from `VITE_API_BASE` |
 | `components/Landing.jsx` | Landing page: hero, status chip, recorded case, agent journey, audit trail, real vs simulated |
 | `components/RecordedCaseCard.jsx` | The real recorded case (or empty state) in the hero |
 | `components/AuditTrailVisual.jsx` | That case's real audit trail |
@@ -51,25 +51,34 @@ Frontend files (`frontend/src/`):
 | `components/Dashboard.jsx`, `MetricsSection.jsx`, `ResultsTable.jsx` | Batch evaluation |
 | `components/RevenueNetworkBackground.jsx` | Animated canvas background |
 | `hooks/useShowcaseCase.js`, `useHealth.js`, `useEvaluation.js`, `useCountUp.js`, `useReveal.js` | Data and animation hooks |
-| `api.js` | `API_BASE` and `apiFetch`, the only place that calls `fetch`; errors are `ApiError` with a displayable message |
+| `api.js` | `API_BASE` and `apiFetch`, the only place that calls `fetch`; errors are `ApiError` with a displayable message; `session: true` gets, sends and renews the session token (memory only) |
 
 ## 3. Endpoints (current)
 
 | Method | Path | Auth | Rate limit | Calls Razorpay | Notes |
 |---|---|---|---|---|---|
 | GET | `/api/health` | – | – | no | `razorpay_live_connectivity` is a fixed `"unverified"` |
-| POST | `/api/batch/run?n&try_live_orders&seed` | API key if set | 10/min/IP | only if `try_live_orders`, at most `MAX_LIVE_ORDERS_PER_BATCH` (5) orders, stopping at the first failure | n ≤ 500; synchronous; `try_live_orders` defaults to false; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
+| POST | `/api/session` | – | 10/min/IP | no | Issues `{token, expires_in, orders_per_session}`; send the token as `X-Session-Token` |
+| POST | `/api/batch/run?n&try_live_orders&seed` | session | 10/min/IP | only if `try_live_orders`: at most `MAX_LIVE_ORDERS_PER_BATCH` (5) orders, within the session and daily budget, stopping at the first failure | n ≤ 500; synchronous; `try_live_orders` defaults to false; with no budget left the batch still runs on local ids; `seed` (default 42) makes the batch and its simulated outcomes reproducible; returned with the results and in metrics |
 | GET | `/api/batch/results` | – | – | no | Last batch from storage |
 | GET | `/api/batch/metrics` | – | – | no | 404 before first batch |
 | GET | `/api/evaluation` | – | – | no | The committed multi-seed evaluation (`backend/evaluation/batch_eval.json`, made by `evaluate_batch.py`); 404 if not generated. The only source of headline recovery numbers |
 | GET | `/api/showcase/case` | – | – | no | One real recorded case for the landing page: latest live-demo result (`kind: live_demo`), else a batch record (`kind: batch_record`, labelled synthetic failure + simulated outcome), else `{"kind": "none"}` |
 | GET | `/api/live-demo/config` | – | – | no | Returns public `key_id` |
-| POST | `/api/live-demo/create-order` | API key if set | 10/min/IP | yes | ₹1–₹1,000, receipt generated server-side |
-| POST | `/api/live-demo/report-failure?order_id&payment_id` | API key if set | **none** | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; payment status must be `failed` (`created`/`authorized` → 409 not final; anything else → 400) |
-| POST | `/api/live-demo/create-recovery-order?order_id` | API key if set | 10/min/IP | yes | Stage `failure_recorded` or `recovery_failed` → `recovery_order_created`; runs `safety_check` with `recovery_attempts` first (≥ 3 → stage `held`, 409, no order); server creates the order for the original amount and stores `current_recovery_order_id` |
-| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id&razorpay_signature` | API key if set | **none** | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording; a **captured** payment needs a valid Checkout signature (400 otherwise); failed attempts need none |
+| POST | `/api/live-demo/create-order` | session | 10/min/IP | yes (1 order from the budget; refunded if Razorpay fails) | ₹1–₹1,000, receipt generated server-side; the session record stores the token's owner id |
+| POST | `/api/live-demo/report-failure?order_id&payment_id` | session, owner | 30/min/IP | yes | Stage `order_created` → `failure_recorded` / `held`; checks order/amount/INR; payment status must be `failed` (`created`/`authorized` → 409 not final; anything else → 400) |
+| POST | `/api/live-demo/create-recovery-order?order_id` | session, owner | 10/min/IP | yes (1 order from the budget) | Stage `failure_recorded` or `recovery_failed` → `recovery_order_created`; runs `safety_check` with `recovery_attempts` first (≥ 3 → stage `held`, 409, no order); server creates the order for the original amount and stores `current_recovery_order_id` |
+| POST | `/api/live-demo/report-recovery?order_id&recovery_order_id&recovery_payment_id&razorpay_signature` | session, owner | 30/min/IP | yes | Stage `recovery_order_created` → `recovered` / `recovery_failed`; `recovery_order_id` must equal the stored one; non-final payment status → 409 without recording; a **captured** payment needs a valid Checkout signature (400 otherwise); failed attempts need none |
 
 Out-of-order or repeated calls return **409**; unknown sessions **404**. Order and payment ids are validated on every live-demo endpoint (`^order_[A-Za-z0-9]{1,40}$`, `^pay_[A-Za-z0-9]{1,40}$`; signature ≤ 128 chars) → **422** before any Razorpay call. Every stage change is an atomic read-check-write (`storage.update_atomic`).
+
+### 3a. Access and rate limits (P5-1, P5-2)
+
+- **Session tokens** replace the old static `X-API-Key`, which a browser couldn't keep secret. `POST /api/session` returns a random token (`secrets.token_urlsafe(32)`), valid `ACCESS_SESSION_TTL_SECONDS` (30 min). Only its SHA-256 is stored (`access:<hash>`). Missing, unknown or expired token → **401**; the frontend then gets a new token and retries once.
+- **Ownership:** a live-demo session stores the creating token's hash; every later step from another token → **403**, before any Razorpay call.
+- **Order budgets:** each token may create `ORDERS_PER_SESSION` (10) real orders; the whole server `MAX_LIVE_ORDERS_PER_DAY` (200, key `cap:live_orders:<UTC date>`). Exhausted → **429** with no Razorpay call. A failed Razorpay call gives its slot back. Batches take up to 5 slots and run with however many they get.
+- **Rate limits:** fixed one-minute windows per client IP and scope (`session`, `orders`, `reports`, `batches`), counted with `update_atomic` in the shared store, so they hold across workers and restarts (Redis when configured). The client IP comes from `X-Forwarded-For` only when `TRUSTED_PROXY_HOPS` > 0, taking that many entries from the right (entries further left can be forged). Default 0 = the socket address.
+- **Not yet:** a bot check (Turnstile) in front of `POST /api/session`; deferred by the owner, slots in without other changes.
 
 ## 4. Agent
 
@@ -143,7 +152,10 @@ Every transition is a compare-and-set on the session record. Used payment IDs ar
 |---|---|---|
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | backend `.env` | Test-mode keys (`rzp_test_…`) |
 | `ALLOWED_ORIGINS` | backend env | Comma-separated CORS origins; default localhost:5173, 3000 |
-| `API_KEY` | backend env | Optional; frontend can't send it (P5-1 replaces this) |
+| `ACCESS_SESSION_TTL_SECONDS` | backend env | Session token lifetime (default 1800) |
+| `ORDERS_PER_SESSION` | backend env | Real orders one token may create (default 10) |
+| `MAX_LIVE_ORDERS_PER_DAY` | backend env | Server-wide daily cap on real orders (default 200) |
+| `TRUSTED_PROXY_HOPS` | backend env | Proxies in front of the app whose `X-Forwarded-For` entries are trusted (default 0; usually 1 behind a platform proxy, to be verified against the real host's headers at deploy) |
 | `REDIS_URL` | backend env | Optional storage backend |
 | `SQLITE_PATH` | backend env | Override SQLite location (tests use it) |
 | `LIVE_DEMO_TTL_SECONDS` | backend env | Session expiry |
