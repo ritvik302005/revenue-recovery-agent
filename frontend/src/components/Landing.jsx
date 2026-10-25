@@ -139,15 +139,10 @@ export default function Landing({ onEnterDemo, onEnterDashboard }) {
         </RevealSection>
       </div>
 
-      {/* HEADLINE METRICS — from the batch evaluation, explicitly labeled */}
+      {/* HEADLINE METRICS — from GET /api/evaluation, explicitly labeled */}
       <div className="landing-inner landing-inner-wide">
         <RevealSection>
           <HeadlineMetrics />
-          <p className="headline-metrics-note">
-            From the 60-case batch evaluation. The recovery rate and revenue
-            figures are simulated outcomes, not money actually recovered —
-            see real vs simulated below.
-          </p>
         </RevealSection>
       </div>
 

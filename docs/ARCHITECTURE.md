@@ -46,11 +46,11 @@ Frontend files (`frontend/src/`):
 | `components/RecordedCaseCard.jsx` | The real recorded case (or empty state) in the hero |
 | `components/AuditTrailVisual.jsx` | That case's real audit trail |
 | `components/AgentJourney.jsx` | Six-step explanation of the agent's controls |
-| `components/HeadlineMetrics.jsx` | Headline numbers (hardcoded until P3-1) |
+| `components/HeadlineMetrics.jsx` | Headline numbers from `GET /api/evaluation` |
 | `components/LiveDemo.jsx` | Live Razorpay Checkout flow |
 | `components/Dashboard.jsx`, `MetricsSection.jsx`, `ResultsTable.jsx` | Batch evaluation |
 | `components/RevenueNetworkBackground.jsx` | Animated canvas background |
-| `hooks/useShowcaseCase.js`, `useHealth.js`, `useCountUp.js`, `useReveal.js` | Data and animation hooks |
+| `hooks/useShowcaseCase.js`, `useHealth.js`, `useEvaluation.js`, `useCountUp.js`, `useReveal.js` | Data and animation hooks |
 
 ## 3. Endpoints (current)
 
