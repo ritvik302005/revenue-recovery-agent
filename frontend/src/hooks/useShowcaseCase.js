@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { API_BASE } from '../api.js'
+import { apiFetch } from '../api.js'
 
 /**
  * The one real recorded case shown on the landing page (latest completed
@@ -14,9 +14,7 @@ export function useShowcaseCase() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/showcase/case`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+      const data = await apiFetch('/api/showcase/case')
       setState({ status: 'ready', data, error: null })
     } catch (e) {
       setState((prev) => (prev.status === 'ready' ? prev : { status: 'error', data: null, error: e.message }))

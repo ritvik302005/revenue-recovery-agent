@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
+import { apiFetch } from '../api.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const CHECKOUT_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js'
 
 // Razorpay's documented test cards (checked 2026-10-25):
@@ -42,8 +42,7 @@ export default function LiveDemo({ onBack }) {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/live-demo/config`)
-      .then((r) => r.json())
+    apiFetch('/api/live-demo/config')
       .then(setConfig)
       .catch(() => setConfig({ configured: false }))
     loadCheckoutScript().catch((e) => setError(e.message))
@@ -53,13 +52,10 @@ export default function LiveDemo({ onBack }) {
     setError(null)
     setBusy(true)
     try {
-      const res = await fetch(`${API_BASE}/api/live-demo/create-order`, {
+      const orderData = await apiFetch('/api/live-demo/create-order', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: 1000, label: 'live_demo_failure' }),
+        body: { amount: 1000, label: 'live_demo_failure' },
       })
-      const orderData = await res.json()
-      if (!res.ok) throw new Error(orderData.error || 'Order creation failed')
       setOrder(orderData)
       setStage(STAGES.ORDER_CREATED)
       openCheckout(orderData, 'fail')
@@ -119,12 +115,10 @@ export default function LiveDemo({ onBack }) {
   async function handleFailure(orderId, paymentId) {
     setBusy(true)
     try {
-      const res = await fetch(
-        `${API_BASE}/api/live-demo/report-failure?order_id=${orderId}&payment_id=${paymentId}`,
-        { method: 'POST' }
-      )
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Failed to report failure')
+      const data = await apiFetch('/api/live-demo/report-failure', {
+        method: 'POST',
+        params: { order_id: orderId, payment_id: paymentId },
+      })
       setFailureInfo(data)
       setStage(STAGES.FAILURE_RECORDED)
     } catch (e) {
@@ -140,12 +134,10 @@ export default function LiveDemo({ onBack }) {
     try {
       // The server creates the recovery order and binds it to this
       // session; report-recovery only accepts a payment on this order.
-      const res = await fetch(
-        `${API_BASE}/api/live-demo/create-recovery-order?order_id=${order.id}`,
-        { method: 'POST' }
-      )
-      const orderData = await res.json()
-      if (!res.ok) throw new Error(orderData.detail || 'Could not create the recovery order')
+      const orderData = await apiFetch('/api/live-demo/create-recovery-order', {
+        method: 'POST',
+        params: { order_id: order.id },
+      })
       setRecoveryOrder(orderData)
       setStage(STAGES.RECOVERY_ORDER_CREATED)
       openCheckout(orderData, 'success')
@@ -158,15 +150,13 @@ export default function LiveDemo({ onBack }) {
   async function handleRecoverySuccess(originalOrderId, recoveryOrderId, recoveryPaymentId, signature) {
     setBusy(true)
     try {
-      const params = new URLSearchParams({
+      const params = {
         order_id: originalOrderId,
         recovery_order_id: recoveryOrderId,
         recovery_payment_id: recoveryPaymentId,
-      })
-      if (signature) params.set('razorpay_signature', signature)
-      const res = await fetch(`${API_BASE}/api/live-demo/report-recovery?${params}`, { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Failed to report recovery')
+      }
+      if (signature) params.razorpay_signature = signature
+      const data = await apiFetch('/api/live-demo/report-recovery', { method: 'POST', params })
       setResult(data)
       setStage(STAGES.DONE)
     } catch (e) {

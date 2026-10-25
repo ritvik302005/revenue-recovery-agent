@@ -51,6 +51,7 @@ Frontend files (`frontend/src/`):
 | `components/Dashboard.jsx`, `MetricsSection.jsx`, `ResultsTable.jsx` | Batch evaluation |
 | `components/RevenueNetworkBackground.jsx` | Animated canvas background |
 | `hooks/useShowcaseCase.js`, `useHealth.js`, `useEvaluation.js`, `useCountUp.js`, `useReveal.js` | Data and animation hooks |
+| `api.js` | `API_BASE` and `apiFetch`, the only place that calls `fetch`; errors are `ApiError` with a displayable message |
 
 ## 3. Endpoints (current)
 

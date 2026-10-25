@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import MetricsSection from './MetricsSection.jsx'
 import ResultsTable from './ResultsTable.jsx'
-
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+import { apiFetch } from '../api.js'
 
 // Says what the run actually was, not what it might have been.
 function describeRun(metrics) {
@@ -35,17 +34,12 @@ export default function Dashboard({ onBack }) {
     setLoading(true)
     setError(null)
     try {
-      const runRes = await fetch(
-        `${API_BASE}/api/batch/run?n=${batchSize}&seed=${seed}&try_live_orders=${liveOrders}`,
-        { method: 'POST' }
-      )
-      if (!runRes.ok) throw new Error(`Batch run failed: ${runRes.status}`)
-      const runData = await runRes.json()
+      const runData = await apiFetch('/api/batch/run', {
+        method: 'POST',
+        params: { n: batchSize, seed, try_live_orders: liveOrders },
+      })
       setResults(runData.results)
-
-      const metricsRes = await fetch(`${API_BASE}/api/batch/metrics`)
-      const metricsData = await metricsRes.json()
-      setMetrics(metricsData)
+      setMetrics(await apiFetch('/api/batch/metrics'))
     } catch (e) {
       setError(e.message)
     } finally {

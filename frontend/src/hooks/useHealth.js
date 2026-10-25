@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { API_BASE } from '../api.js'
+import { apiFetch } from '../api.js'
 
 /**
  * Backend health, for status chips that must describe the real state.
@@ -10,8 +10,7 @@ export function useHealth() {
 
   useEffect(() => {
     let cancelled = false
-    fetch(`${API_BASE}/api/health`)
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+    apiFetch('/api/health')
       .then((data) => { if (!cancelled) setState({ status: 'ready', data }) })
       .catch(() => { if (!cancelled) setState({ status: 'error', data: null }) })
     return () => { cancelled = true }
